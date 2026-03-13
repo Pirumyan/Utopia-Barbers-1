@@ -68,14 +68,16 @@ async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
 
 @client_router.callback_query(F.data.startswith("select_time_"))
 async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
-    selected_time = callback.data.split("_")[2]
+    selected_time_str = callback.data.split("_")[2]
+    hour, minute = map(int, selected_time_str.split(':'))
+    selected_time_obj = time(hour, minute)
     today = date.today()
 
     # Проверка, не заняли ли слот пока пользователь думал
     async with db_pool.acquire() as conn:
         slot = await conn.fetchrow('''
-            SELECT status FROM appointments WHERE date = $1 AND time = $2::time
-        ''', today, selected_time)
+            SELECT status FROM appointments WHERE date = $1 AND time = $2
+        ''', today, selected_time_obj)
 
     if not slot or slot['status'] != 'free':
         await callback.answer("Это время уже занято.", show_alert=True)
@@ -83,9 +85,9 @@ async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: async
         await start_booking(callback, db_pool)
         return
 
-    await state.update_data(selected_time=selected_time, selected_date=today)
+    await state.update_data(selected_time=selected_time_str, selected_date=today.isoformat())
     await state.set_state(BookingState.waiting_for_name)
-    await callback.message.edit_text(f"Время {selected_time} свободно. Пожалуйста, введите ваше Имя:")
+    await callback.message.edit_text(f"Время {selected_time_str} свободно. Пожалуйста, введите ваше Имя:")
 
 @client_router.message(BookingState.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
@@ -105,8 +107,10 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     phone = message.text
     name = user_data['name']
     surname = user_data['surname']
-    selected_time = user_data['selected_time']
-    selected_date = user_data['selected_date']
+    selected_time_str = user_data['selected_time']
+    hour, minute = map(int, selected_time_str.split(':'))
+    selected_time_obj = time(hour, minute)
+    selected_date = date.fromisoformat(user_data['selected_date'])
 
     tg_id = message.from_user.id
 
@@ -123,18 +127,18 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
         # Пытаемся занять слот. Если rows updated == 0, значит его кто-то уже занял.
         result = await conn.execute('''
             UPDATE appointments SET status = 'booked', user_id = $1
-            WHERE date = $2 AND time = $3::time AND status = 'free'
-        ''', user_id, selected_date, selected_time)
+            WHERE date = $2 AND time = $3 AND status = 'free'
+        ''', user_id, selected_date, selected_time_obj)
 
     if result == "UPDATE 0":
         await message.answer("К сожалению, это время уже занято. Пожалуйста, начните заново /start")
         await state.clear()
         return
 
-    await message.answer(f"Спасибо! Ваша запись подтверждена.\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time}")
+    await message.answer(f"Спасибо! Ваша запись подтверждена.\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}")
     
     # Уведомление админам
-    admin_msg = f"🔔 Новая запись!\n\nИмя: {name}\nФамилия: {surname}\nТелефон: {phone}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time}"
+    admin_msg = f"🔔 Новая запись!\n\nИмя: {name}\nФамилия: {surname}\nТелефон: {phone}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(admin_id, admin_msg)
