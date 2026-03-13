@@ -42,3 +42,8 @@ async def init_db(pool):
         except asyncpg.exceptions.DuplicateColumnError:
             pass
         logger.info("Database initialized")
+
+async def get_user_lang(tg_id: int, db_pool: asyncpg.Pool) -> str:
+    async with db_pool.acquire() as conn:
+        lang = await conn.fetchval('SELECT lang FROM users WHERE telegram_id = $1', tg_id)
+        return lang if lang else 'ru'

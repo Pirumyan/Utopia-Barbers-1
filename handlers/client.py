@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from datetime import date, datetime, timedelta, time
 import asyncpg
 from config import ADMIN_IDS, YEREVAN_TZ
+from database import get_user_lang
 from locales import get_text
 
 client_router = Router()
@@ -20,11 +21,6 @@ class BookingState(StatesGroup):
 
 def get_yerevan_now():
     return datetime.now(YEREVAN_TZ)
-
-async def get_user_lang(tg_id: int, db_pool: asyncpg.Pool) -> str:
-    async with db_pool.acquire() as conn:
-        lang = await conn.fetchval('SELECT lang FROM users WHERE telegram_id = $1', tg_id)
-        return lang if lang else 'ru'
 
 async def get_main_menu_keyboard(tg_id: int, db_pool: asyncpg.Pool, lang: str):
     now_dt = get_yerevan_now()
@@ -182,9 +178,11 @@ async def process_cancel_app(callback: CallbackQuery, db_pool: asyncpg.Pool, bot
 
     await callback.answer(get_text('cancel_success', lang), show_alert=True)
     
-    admin_msg = f"❌ Клиент отменил запись\n\nИмя: {appointment['name']} {appointment['surname']}\nУслуга: {st}\nТелефон: {appointment['phone']}\nДата: {appointment['date'].strftime('%d.%m.%Y')}\nВремя: {appointment['time'].strftime('%H:%M')}"
     for admin_id in ADMIN_IDS:
         try:
+            admin_lang = await get_user_lang(admin_id, db_pool)
+            svc_name_translated = get_text(f'service_{st}', admin_lang)
+            admin_msg = get_text('admin_notify_cancel_app', admin_lang, name=f"{appointment['name']} {appointment['surname']}", service=svc_name_translated, phone=appointment['phone'], date=appointment['date'].strftime('%d.%m.%Y'), time=appointment['time'].strftime('%H:%M'))
             await bot.send_message(admin_id, admin_msg)
         except Exception:
             pass
@@ -481,9 +479,11 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     keyboard = await get_main_menu_keyboard(tg_id, db_pool, lang)
     await message.answer(msg_txt, reply_markup=keyboard, parse_mode="HTML")
 
-    admin_msg = f"✅ Новая запись!\n\nИмя: {name} {surname}\nУслуга: {service}\nТелефон: {phone}\nПрофиль: {username}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
     for admin_id in ADMIN_IDS:
         try:
+            admin_lang = await get_user_lang(admin_id, db_pool)
+            svc_name_translated = get_text(f'service_{service}', admin_lang)
+            admin_msg = get_text('admin_notify_new_app', admin_lang, name=f"{name} {surname}", service=svc_name_translated, phone=phone, username=username, date=selected_date.strftime('%d.%m.%Y'), time=selected_time_str)
             await bot.send_message(admin_id, admin_msg, parse_mode="HTML")
         except Exception:
             pass

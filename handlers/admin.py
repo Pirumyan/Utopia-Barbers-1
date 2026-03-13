@@ -4,6 +4,8 @@ from aiogram.filters import Command
 from datetime import datetime, timedelta, date, time
 import asyncpg
 from config import ADMIN_IDS, YEREVAN_TZ
+from database import get_user_lang
+from locales import get_text
 
 admin_router = Router()
 
@@ -15,8 +17,9 @@ def get_yerevan_date() -> date:
 
 @admin_router.message(Command("startday"))
 async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
-        await message.answer("У вас нет доступа к этой команде.")
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     # Форматы: /startday HH:MM HH:MM или /startday DD.MM HH:MM HH:MM
@@ -33,10 +36,10 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
             day, month = map(int, datestr.split('.'))
             target_date = date(get_yerevan_date().year, month, day)
         except ValueError:
-            await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+            await message.answer(get_text('admin_format_invalid_date', lang))
             return
     else:
-        await message.answer("Формат:\n/startday HH:MM HH:MM (на сегодня)\nили\n/startday DD.MM HH:MM HH:MM (на конкретный день)")
+        await message.answer(get_text('admin_format_startday', lang))
         return
 
     try:
@@ -50,7 +53,7 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
             eh = int(end_str)
             em = 0
         except ValueError:
-            await message.answer("Формат времени HH:MM, например: 10:45 17:35")
+            await message.answer(get_text('admin_format_invalid_time', lang))
             return
 
     start_time = time(sh, sm)
@@ -78,51 +81,102 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
                 pass
             current_dt += timedelta(minutes=15)
 
-    await message.answer(f"Рабочий день на {target_date.strftime('%d.%m.%Y')} создан с {start_time.strftime('%H:%M')} до {end_time.strftime('%H:%M')}.\nСоздано слотов: {slots_created}.")
+    await message.answer(get_text('admin_startday_success', lang, date=target_date.strftime('%d.%m.%Y'), start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created))
 
 @admin_router.message(Command("busy"))
 async def cmd_busy(message: Message, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     args = message.text.split()[1:]
+    target_date = get_yerevan_date()
+    start_time_str = None
+    end_time_str = None
     
     if len(args) == 1:
-        # Без даты, сегодня
-        target_date = get_yerevan_date()
-        time_str = args[0]
+        # Без даты, сегодня, 1 время: HH:MM
+        start_time_str = args[0]
     elif len(args) == 2:
-        # С датой
-        datestr, time_str = args
+        if '.' in args[0]:
+            # С датой, 1 время: DD.MM HH:MM
+            datestr, start_time_str = args
+            try:
+                day, month = map(int, datestr.split('.'))
+                target_date = date(get_yerevan_date().year, month, day)
+            except ValueError:
+                await message.answer(get_text('admin_format_invalid_date', lang))
+                return
+        else:
+            # Сегодня, период: HH:MM HH:MM
+            start_time_str, end_time_str = args
+    elif len(args) == 3:
+        # С датой, период: DD.MM HH:MM HH:MM
+        datestr, start_time_str, end_time_str = args
         try:
             day, month = map(int, datestr.split('.'))
             target_date = date(get_yerevan_date().year, month, day)
         except ValueError:
-            await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+            await message.answer(get_text('admin_format_invalid_date', lang))
             return
     else:
-        await message.answer("Формат:\n/busy HH:MM (на сегодня)\nили\n/busy DD.MM HH:MM (на конкретный день)")
+        await message.answer(get_text('admin_format_busy', lang))
         return
 
     try:
-        hour, minute = map(int, time_str.split(':'))
-        busy_time = time(hour, minute)
+        sh, sm = map(int, start_time_str.split(':'))
+        start_time = time(sh, sm)
     except ValueError:
-        await message.answer("Неверный формат времени HH:MM.")
+        await message.answer(get_text('admin_format_invalid_time', lang))
         return
 
-    async with db_pool.acquire() as conn:
-        await conn.execute('''
-            INSERT INTO appointments (date, time, status) 
-            VALUES ($1, $2, 'busy')
-            ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL
-        ''', target_date, busy_time)
+    end_time = None
+    if end_time_str:
+        try:
+            eh, em = map(int, end_time_str.split(':'))
+            end_time = time(eh, em)
+        except ValueError:
+            await message.answer(get_text('admin_format_invalid_time', lang))
+            return
 
-    await message.answer(f"Время {busy_time.strftime('%H:%M')} отмечено как занятое на {target_date.strftime('%d.%m.%Y')}.")
+    async with db_pool.acquire() as conn:
+        slots_created = 0
+        current_dt = datetime.combine(target_date, start_time)
+        
+        if not end_time:
+            # Точечная блокировка одного слота
+            await conn.execute('''
+                INSERT INTO appointments (date, time, status) 
+                VALUES ($1, $2, 'busy')
+                ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL, service_type = NULL
+            ''', target_date, start_time)
+            slots_created = 1
+        else:
+            # Периодическая блокировка
+            end_dt = datetime.combine(target_date, end_time)
+            while current_dt < end_dt:
+                busy_time = current_dt.time()
+                await conn.execute('''
+                    INSERT INTO appointments (date, time, status) 
+                    VALUES ($1, $2, 'busy')
+                    ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL, service_type = NULL
+                ''', target_date, busy_time)
+                slots_created += 1
+                current_dt += timedelta(minutes=15)
+
+    if slots_created == 0 and end_time:
+        await message.answer(get_text('admin_busy_fail', lang))
+    elif slots_created == 1 and not end_time:
+        await message.answer(get_text('admin_busy_success_single', lang, time=start_time.strftime('%H:%M'), date=target_date.strftime('%d.%m.%Y')))
+    elif end_time:
+        await message.answer(get_text('admin_busy_success_period', lang, start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created, date=target_date.strftime('%d.%m.%Y')))
 
 @admin_router.message(Command("cancel"))
 async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     args = message.text.split()[1:]
@@ -136,29 +190,29 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             day, month = map(int, datestr.split('.'))
             target_date = date(get_yerevan_date().year, month, day)
         except ValueError:
-            await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+            await message.answer(get_text('admin_format_invalid_date', lang))
             return
     else:
-        await message.answer("Формат:\n/cancel HH:MM (на сегодня)\nили\n/cancel DD.MM HH:MM (на конкретный день)")
+        await message.answer(get_text('admin_format_cancel', lang))
         return
 
     try:
         hour, minute = map(int, time_str.split(':'))
         cancel_time = time(hour, minute)
     except ValueError:
-        await message.answer("Неверный формат времени HH:MM.")
+        await message.answer(get_text('admin_format_invalid_time', lang))
         return
 
     async with db_pool.acquire() as conn:
         appointment = await conn.fetchrow('''
-            SELECT a.id, a.user_id, u.telegram_id, a.service_type 
+            SELECT a.id, a.user_id, u.telegram_id, a.service_type, u.lang as client_lang 
             FROM appointments a 
             JOIN users u ON a.user_id = u.id 
             WHERE a.date = $1 AND a.time = $2 AND a.status = 'booked'
         ''', target_date, cancel_time)
 
         if not appointment:
-            await message.answer(f"На {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} нет записей клиентов.")
+            await message.answer(get_text('admin_cancel_not_found', lang, date=target_date.strftime('%d.%m'), time=cancel_time.strftime('%H:%M')))
             return
 
         st = appointment['service_type']
@@ -175,37 +229,40 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             tmp = datetime.combine(target_date, cdt) + timedelta(minutes=15)
             cdt = tmp.time()
 
-        await message.answer(f"Запись клиента на {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} отменена. Слот снова свободен.")
+        await message.answer(get_text('admin_cancel_success', lang, date=target_date.strftime('%d.%m'), time=cancel_time.strftime('%H:%M')))
 
         try:
+            client_lang = appointment['client_lang'] if appointment['client_lang'] else 'ru'
             await bot.send_message(
                 appointment['telegram_id'], 
-                "К сожалению запись отменена. Пожалуйста выберите другое время."
+                get_text('admin_cancel_notify_client', client_lang)
             )
         except Exception:
             pass
 
 @admin_router.message(Command("dayoff"))
 async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool, bot: Bot):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("Формат: /dayoff DD.MM")
+        await message.answer(get_text('admin_format_dayoff', lang))
         return
 
     try:
         day, month = map(int, args[1].split('.'))
         target_date = date(get_yerevan_date().year, month, day)
     except ValueError:
-        await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+        await message.answer(get_text('admin_format_invalid_date', lang))
         return
 
     async with db_pool.acquire() as conn:
         # Находим всех клиентов, записанных на этот день
         booked_apps = await conn.fetch('''
-            SELECT a.id, a.time, u.telegram_id, u.name 
+            SELECT a.id, a.time, u.telegram_id, u.name, u.lang as client_lang
             FROM appointments a
             JOIN users u ON a.user_id = u.id
             WHERE a.date = $1 AND a.status = 'booked'
@@ -218,18 +275,21 @@ async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool, bot: Bot):
     # Уведомляем клиентов об отмене
     for app in booked_apps:
         try:
+            client_lang = app['client_lang'] if app['client_lang'] else 'ru'
             await bot.send_message(
                 app['telegram_id'],
-                f"Здравствуйте, {app['name']}! К сожалению, мы вынуждены отменить вашу запись на {target_date.strftime('%d.%m.%Y')} в {app['time'].strftime('%H:%M')} из-за непредвиденного выходного. Приносим свои извинения, пожалуйста, выберите другое время через меню."
+                get_text('admin_dayoff_notify_client', client_lang, name=app['name'], date=target_date.strftime('%d.%m.%Y'), time=app['time'].strftime('%H:%M'))
             )
         except Exception:
             pass
 
-    await message.answer(f"Все слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).\nКлиентов, чьи записи были отменены: {len(booked_apps)}.")
+    await message.answer(get_text('admin_dayoff_success', lang, count=count, date=target_date.strftime('%d.%m.%Y'), clients_count=len(booked_apps)))
 
 @admin_router.message(Command("schedule", "shedule"))
 async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     today = get_yerevan_date()
@@ -245,19 +305,12 @@ async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
         ''', today, end_date)
 
     if not appointments:
-        await message.answer("На ближайшие 3 дня записей нет.")
+        await message.answer(get_text('admin_schedule_empty', lang))
         return
 
-    text = "🗓 <b>Расписание на ближайшие 3 дня:</b>\n"
+    text = get_text('admin_schedule_title', lang)
     current_date = None
     last_print = None
-    
-    # Словарь перевода для админа (на русском)
-    svc_names = {
-        'haircut': 'Стрижка',
-        'beard': 'Борода',
-        'combo': 'Стрижка+Борода'
-    }
     
     for app in appointments:
         if app['date'] != current_date:
@@ -267,29 +320,29 @@ async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
         uid = f"{app['date']}_{app['telegram_id']}_{app['service_type']}"
         if uid != last_print:
             username = f'<a href="tg://user?id={app["telegram_id"]}">{app["name"]} {app["surname"]}</a>'
-            svc_name = svc_names.get(app['service_type'], 'Услуга')
+            svc_name = get_text(f"service_{app['service_type']}", lang)
             text += f"⏰ {app['time'].strftime('%H:%M')} — {username} ({app['phone']}) [{svc_name}]\n"
             last_print = uid
 
-    # Если текст слишком длинный, Telegram может ругаться (лимит 4096 символов).
-    # Но для 3 дней записей это вряд ли произойдет.
     await message.answer(text, parse_mode="HTML")
 
 @admin_router.message(Command("workday"))
 async def cmd_workday(message: Message, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
         return
 
     args = message.text.split()
     if len(args) != 2:
-        await message.answer("Формат: /workday DD.MM")
+        await message.answer(get_text('admin_format_workday', lang))
         return
 
     try:
         day, month = map(int, args[1].split('.'))
         target_date = date(get_yerevan_date().year, month, day)
     except ValueError:
-        await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+        await message.answer(get_text('admin_format_invalid_date', lang))
         return
 
     start_time = time(10, 0)
@@ -315,4 +368,4 @@ async def cmd_workday(message: Message, db_pool: asyncpg.Pool):
                 pass
             current_dt += timedelta(minutes=15)
 
-    await message.answer(f"Выходной отменен! Стандартный рабочий день на {target_date.strftime('%d.%m.%Y')} создан (с 10:00 до 21:00).\nВосстановлено слотов: {slots_created}.")
+    await message.answer(get_text('admin_workday_success', lang, date=target_date.strftime('%d.%m.%Y'), count=slots_created))

@@ -167,16 +167,118 @@ TEXTS = {
         'en': "✅ You successfully booked a <b>{service}</b>!\n📅 Date: {date}\n⏰ Time: {time}"
     },
     
-    # Catch-all
-    'catch_all_menu': {
-        'ru': "Пожалуйста, используйте кнопки ниже для записи или отмены:",
-        'am': "Խնդրում ենք օգտագործել ստորև նշված կոճակները գրանցվելու կամ չեղարկելու համար:",
-        'en': "Please use the buttons below to book or cancel:"
+    # Admin Commands
+    'admin_no_access': {
+        'ru': "У вас нет доступа к этой команде.",
+        'am': "Դուք մուտք չունեք այս հրամանին:",
+        'en': "You don't have access to this command."
     },
-    'catch_all_input': {
-        'ru': "Пожалуйста, следуйте инструкциям на экране или нажмите /start для сброса.",
-        'am': "Խնդրում ենք հետևել էկրանի հրահանգներին կամ սեղմել /start սկզբնական վիճակին վերադառնալու համար:",
-        'en': "Please follow the instructions on the screen or press /start to reset."
+    'admin_format_invalid_date': {
+        'ru': "Ошибка формата даты. Используйте DD.MM, например: 14.03",
+        'am': "Ամսաթվի ձևաչափի սխալ: Օգտագործեք DD.MM, օրինակ՝ 14.03",
+        'en': "Invalid date format. Use DD.MM, e.g.: 14.03"
+    },
+    'admin_format_invalid_time': {
+        'ru': "Неверный формат времени HH:MM.",
+        'am': "Ժամանակի սխալ ձևաչափ HH:MM:",
+        'en': "Invalid time format HH:MM."
+    },
+    'admin_format_startday': {
+        'ru': "Формат:\n/startday HH:MM HH:MM (на сегодня)\nили\n/startday DD.MM HH:MM HH:MM (на конкретный день)",
+        'am': "Ձևաչափ:\n/startday HH:MM HH:MM (այսօրվա համար)\nկամ\n/startday DD.MM HH:MM HH:MM (կոնկրետ օրվա համար)",
+        'en': "Format:\n/startday HH:MM HH:MM (for today)\nor\n/startday DD.MM HH:MM HH:MM (for a specific day)"
+    },
+    'admin_startday_success': {
+        'ru': "Рабочий день на {date} создан с {start} до {end}.\nСоздано слотов: {count}.",
+        'am': "Աշխատանքային օրը {date}-ի համար ստեղծվել է {start}-ից մինչև {end}:\nՍտեղծված տեղեր՝ {count}:",
+        'en': "Workday for {date} created from {start} to {end}.\nSlots created: {count}."
+    },
+    'admin_format_busy': {
+        'ru': "Формат:\n1 слот: /busy HH:MM или /busy DD.MM HH:MM\nНесколько слотов от и до: /busy HH:MM HH:MM или /busy DD.MM HH:MM HH:MM",
+        'am': "Ձևաչափ:\n1 տեղ՝ /busy HH:MM կամ /busy DD.MM HH:MM\nՄի քանի տեղ՝ /busy HH:MM HH:MM կամ /busy DD.MM HH:MM HH:MM",
+        'en': "Format:\n1 slot: /busy HH:MM or /busy DD.MM HH:MM\nMultiple slots: /busy HH:MM HH:MM or /busy DD.MM HH:MM HH:MM"
+    },
+    'admin_busy_success_single': {
+        'ru': "Время {time} отмечено как занятое на {date}.",
+        'am': "{time} ժամը նշվել է որպես զբաղված {date}-ի համար:",
+        'en': "Time {time} marked as busy on {date}."
+    },
+    'admin_busy_success_period': {
+        'ru': "Период с {start} до {end} ({count} слотов) отмечен как занятый на {date}.",
+        'am': "Ժամանակահատվածը {start}-ից մինչև {end} ({count} տեղ) նշվել է որպես զբաղված {date}-ի համար:",
+        'en': "Period from {start} to {end} ({count} slots) marked as busy on {date}."
+    },
+    'admin_busy_fail': {
+        'ru': "Не заблокировано ни одного слота. Проверьте правильность времени от и до.",
+        'am': "Ոչ մի տեղ չի արգելափակվել: Ստուգեք ժամանակի ճշտությունը:",
+        'en': "No slots were blocked. Check the correctness of the time."
+    },
+    'admin_format_cancel': {
+        'ru': "Формат:\n/cancel HH:MM (на сегодня)\nили\n/cancel DD.MM HH:MM (на конкретный день)",
+        'am': "Ձևաչափ:\n/cancel HH:MM (այսօրվա համար)\nկամ\n/cancel DD.MM HH:MM (կոնկրետ օրվա համար)",
+        'en': "Format:\n/cancel HH:MM (for today)\nor\n/cancel DD.MM HH:MM (for a specific day)"
+    },
+    'admin_cancel_not_found': {
+        'ru': "На {date} в {time} нет записей клиентов.",
+        'am': "{date}-ին ժամը {time}-ին հաճախորդների գրանցումներ չկան:",
+        'en': "No client appointments on {date} at {time}."
+    },
+    'admin_cancel_success': {
+        'ru': "Запись клиента на {date} в {time} отменена. Слот снова свободен.",
+        'am': "Հաճախորդի գրանցումը {date}-ին ժամը {time}-ին չեղարկվել է: Տեղը կրկին ազատ է:",
+        'en': "Client appointment on {date} at {time} cancelled. Slot is free again."
+    },
+    'admin_cancel_notify_client': {
+        'ru': "К сожалению запись отменена. Пожалуйста выберите другое время.",
+        'am': "Ցավոք, գրանցումը չեղարկվել է: Խնդրում ենք ընտրել այլ ժամանակ:",
+        'en': "Unfortunately the appointment was cancelled. Please choose another time."
+    },
+    'admin_format_dayoff': {
+        'ru': "Формат: /dayoff DD.MM",
+        'am': "Ձևաչափ: /dayoff DD.MM",
+        'en': "Format: /dayoff DD.MM"
+    },
+    'admin_dayoff_success': {
+        'ru': "Все слоты ({count} шт.) на {date} удалены (назначен Выходной).\nКлиентов, чьи записи были отменены: {clients_count}.",
+        'am': "Բոլոր տեղերը ({count} հատ) {date}-ի համար հեռացվել են (նշանակված է հանգստյան օր):\nՉեղարկված հաճախորդների քանակը՝ {clients_count}:",
+        'en': "All slots ({count} pcs) for {date} deleted (Day Off scheduled).\nClients whose appointments were cancelled: {clients_count}."
+    },
+    'admin_dayoff_notify_client': {
+        'ru': "Здравствуйте, {name}! К сожалению, мы вынуждены отменить вашу запись на {date} в {time} из-за непредвиденного выходного. Приносим свои извинения, пожалуйста, выберите другое время через меню.",
+        'am': "Բարև ձեզ, {name}: Ցավոք, մենք ստիպված ենք չեղարկել ձեր գրանցումը {date}-ին ժամը {time}-ին չնախատեսված հանգստյան օրվա պատճառով: Ներողություն ենք խնդրում, խնդրում ենք ընտրել այլ ժամանակ ընտրացանկից:",
+        'en': "Hello, {name}! Unfortunately, we have to cancel your appointment on {date} at {time} due to an unforeseen day off. We apologize, please choose another time via the menu."
+    },
+    'admin_schedule_empty': {
+        'ru': "На ближайшие 3 дня записей нет.",
+        'am': "Առաջիկա 3 օրվա համար գրանցումներ չկան:",
+        'en': "No appointments for the next 3 days."
+    },
+    'admin_schedule_title': {
+        'ru': "🗓 <b>Расписание на ближайшие 3 дня:</b>\n",
+        'am': "🗓 <b>Ժամանակացույց առաջիկա 3 օրվա համար՝</b>\n",
+        'en': "🗓 <b>Schedule for the next 3 days:</b>\n"
+    },
+    'admin_format_workday': {
+        'ru': "Формат: /workday DD.MM",
+        'am': "Ձևաչափ: /workday DD.MM",
+        'en': "Format: /workday DD.MM"
+    },
+    'admin_workday_success': {
+        'ru': "Выходной отменен! Стандартный рабочий день на {date} создан (с 10:00 до 21:00).\nВосстановлено слотов: {count}.",
+        'am': "Հանգստյան օրը չեղարկվել է: {date}-ի համար ստեղծվել է ստանդարտ աշխատանքային օր (10:00-ից 21:00):\nՎերականգնված տեղեր՝ {count}:",
+        'en': "Day off cancelled! Standard workday for {date} created (from 10:00 to 21:00).\nSlots restored: {count}."
+    },
+
+    # Admin Notifications
+    'admin_notify_new_app': {
+        'ru': "✅ Новая запись!\n\nИмя: {name}\nУслуга: {service}\nТелефон: {phone}\nПрофиль: {username}\nДата: {date}\nВремя: {time}",
+        'am': "✅ Նոր գրանցում!\n\nԱնուն: {name}\nԾառայություն: {service}\nՀեռախոս: {phone}\nՊրոֆիլ: {username}\nԱմսաթիվ: {date}\nԺամ: {time}",
+        'en': "✅ New appointment!\n\nName: {name}\nService: {service}\nPhone: {phone}\nProfile: {username}\nDate: {date}\nTime: {time}"
+    },
+    'admin_notify_cancel_app': {
+        'ru': "❌ Клиент отменил запись\n\nИмя: {name}\nУслуга: {service}\nТелефон: {phone}\nДата: {date}\nВремя: {time}",
+        'am': "❌ Հաճախորդը չեղարկել է գրանցումը\n\nԱնուն: {name}\nԾառայություն: {service}\nՀեռախոս: {phone}\nԱմսաթիվ: {date}\nԺամ: {time}",
+        'en': "❌ Client cancelled appointment\n\nName: {name}\nService: {service}\nPhone: {phone}\nDate: {date}\nTime: {time}"
     },
 }
 
