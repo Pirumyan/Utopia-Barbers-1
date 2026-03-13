@@ -1,4 +1,4 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message
 from aiogram.filters import Command
 from datetime import datetime, timedelta, date, time
@@ -177,7 +177,7 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             pass
 
 @admin_router.message(Command("dayoff"))
-async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool):
+async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool, bot: Bot):
     if not is_admin(message):
         return
 
@@ -194,10 +194,29 @@ async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool):
         return
 
     async with db_pool.acquire() as conn:
-        deleted = await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free'", target_date)
+        # Находим всех клиентов, записанных на этот день
+        booked_apps = await conn.fetch('''
+            SELECT a.id, a.time, u.telegram_id, u.name 
+            FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.date = $1 AND a.status = 'booked'
+        ''', target_date)
+
+        # Удаляем ВООБЩЕ ВСЕ слоты на эту дату (и свободные, и занятые)
+        deleted = await conn.execute("DELETE FROM appointments WHERE date = $1", target_date)
         count = int(deleted.split()[-1]) if deleted.startswith("DELETE") else 0
 
-    await message.answer(f"Все свободные слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).")
+    # Уведомляем клиентов об отмене
+    for app in booked_apps:
+        try:
+            await bot.send_message(
+                app['telegram_id'],
+                f"Здравствуйте, {app['name']}! К сожалению, мы вынуждены отменить вашу запись на {target_date.strftime('%d.%m.%Y')} в {app['time'].strftime('%H:%M')} из-за непредвиденного выходного. Приносим свои извинения, пожалуйста, выберите другое время через меню."
+            )
+        except Exception:
+            pass
+
+    await message.answer(f"Все слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).\nКлиентов, чьи записи были отменены: {len(booked_apps)}.")
 
 @admin_router.message(Command("schedule"))
 async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
