@@ -5,9 +5,20 @@ from aiogram.types import BotCommand
 from config import BOT_TOKEN, DATABASE_URL
 from database import create_pool, init_db
 
-# Настройка логирования
+from handlers.admin import admin_router
+from handlers.client import client_router
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Middleware для передачи db_pool в обработчики
+class DbPoolMiddleware:
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def __call__(self, handler, event, data):
+        data['db_pool'] = self.pool
+        return await handler(event, data)
 
 async def main():
     if not BOT_TOKEN:
@@ -16,25 +27,30 @@ async def main():
         
     logger.info("Starting bot...")
     
-    # Инициализация бота и диспетчера
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
+    
+    # Подключаем роутеры
+    dp.include_router(admin_router)
+    dp.include_router(client_router)
 
-    # Подключение к БД, если есть URL
-    pool = None
     if DATABASE_URL:
         pool = await create_pool(DATABASE_URL)
         await init_db(pool)
-        dp['db_pool'] = pool
+        
+        # Передаем db_pool как глобальную зависимость (для aiogram 3)
+        dp.workflow_data.update({'db_pool': pool})
     else:
-        logger.warning("DATABASE_URL is not set. Database not initialized. Working in local mode for now.")
+        logger.error("DATABASE_URL is not set!")
+        return
 
-    # Установка команд бота (меню)
+    # Меню команд
     await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="start", description="Записаться к парикмахеру"),
+        BotCommand(command="my_cancel", description="Отменить мою запись"),
     ])
 
-    # Запуск polling
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
