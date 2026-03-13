@@ -99,20 +99,33 @@ async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: async
 
 @client_router.message(BookingState.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
+    text = message.text.strip() if message.text else ""
+    if len(text) < 2:
+        await message.answer("Имя слишком короткое. Пожалуйста, напишите ваше настоящее Имя:")
+        return
+    await state.update_data(name=text)
     await state.set_state(BookingState.waiting_for_surname)
     await message.answer("Теперь введите вашу Фамилию:")
 
 @client_router.message(BookingState.waiting_for_surname)
 async def process_surname(message: Message, state: FSMContext):
-    await state.update_data(surname=message.text)
+    text = message.text.strip() if message.text else ""
+    if len(text) < 2:
+        await message.answer("Фамилия слишком короткая. Пожалуйста, напишите вашу настоящую Фамилию:")
+        return
+    await state.update_data(surname=text)
     await state.set_state(BookingState.waiting_for_phone)
-    await message.answer("И напоследок, введите ваш Номер телефона:")
+    await message.answer("И напоследок, введите ваш Номер телефона (только цифры и знак плюс):")
 
 @client_router.message(BookingState.waiting_for_phone)
 async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Pool, bot: Bot):
+    phone = message.text.strip() if message.text else ""
+    # Простейшая валидация длины телефона
+    if len(phone) < 5:
+        await message.answer("Пожалуйста, введите корректный номер телефона:")
+        return
+
     user_data = await state.get_data()
-    phone = message.text
     name = user_data['name']
     surname = user_data['surname']
     selected_time_str = user_data['selected_time']
@@ -121,6 +134,7 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     selected_date = date.fromisoformat(user_data['selected_date'])
 
     tg_id = message.from_user.id
+    username = f"@{message.from_user.username}" if message.from_user.username else f'<a href="tg://user?id={tg_id}">Профиль клиента</a>'
 
     async with db_pool.acquire() as conn:
         # Сохраняем или обновляем пользователя
@@ -146,10 +160,10 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     await message.answer(f"Спасибо! Ваша запись подтверждена.\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}")
     
     # Уведомление админам
-    admin_msg = f"🔔 Новая запись!\n\nИмя: {name}\nФамилия: {surname}\nТелефон: {phone}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
+    admin_msg = f"🔔 Новая запись!\n\nИмя: {name}\nФамилия: {surname}\nТелефон: {phone}\nАккаунт: {username}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, admin_msg)
+            await bot.send_message(admin_id, admin_msg, parse_mode="HTML")
         except Exception:
             pass
 
