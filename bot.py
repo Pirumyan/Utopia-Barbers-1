@@ -4,14 +4,41 @@ import os
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
-from config import BOT_TOKEN, DATABASE_URL
+from config import BOT_TOKEN, DATABASE_URL, YEREVAN_TZ
 from database import create_pool, init_db
+from datetime import datetime, timedelta
 
 from handlers.admin import admin_router
 from handlers.client import client_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+async def clean_old_records(pool):
+    """Фоновая задача: раз в час проверяет и удаляет старые записи из БД"""
+    while True:
+        try:
+            now_dt = datetime.now(YEREVAN_TZ)
+            today = now_dt.date()
+            now_time = now_dt.time()
+            
+            async with pool.acquire() as conn:
+                # Удаляем все записи, у которых дата меньше сегодня, 
+                # ИЛИ дата сегодня, но время уже прошло
+                deleted = await conn.execute('''
+                    DELETE FROM appointments 
+                    WHERE date < $1 OR (date = $1 AND time < $2)
+                ''', today, now_time)
+                
+                # Извлекаем количество удаленных строк из ответа вроде "DELETE 5"
+                count = int(deleted.split()[-1]) if deleted.startswith("DELETE") else 0
+                if count > 0:
+                    logger.info(f"Очистка БД: удалено {count} устаревших слотов.")
+        except Exception as e:
+            logger.error(f"Ошибка при очистке БД: {e}")
+            
+        # Ждем 1 час перед следующей проверкой
+        await asyncio.sleep(3600)
 
 async def health_check(request):
     return web.Response(text="Bot is running!")
@@ -43,6 +70,9 @@ async def main():
     ])
 
     await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запускаем фоновую задачу очистки базы данных
+    asyncio.create_task(clean_old_records(pool))
     
     # Запускаем веб-сервер для Render, чтобы он не убил проект
     app = web.Application()
