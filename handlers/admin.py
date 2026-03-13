@@ -62,6 +62,9 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
     end_dt = datetime.combine(target_date, end_time)
 
     async with db_pool.acquire() as conn:
+        # Удаляем старые свободные слоты на эту дату, чтобы можно было перезаписать расписание
+        await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free'", target_date)
+        
         while current_dt < end_dt:
             slot_time = current_dt.time()
             try:
@@ -150,3 +153,26 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             )
         except Exception:
             pass
+
+@admin_router.message(Command("dayoff"))
+async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool):
+    if not is_admin(message):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Формат: /dayoff DD.MM")
+        return
+
+    try:
+        day, month = map(int, args[1].split('.'))
+        target_date = date(get_yerevan_date().year, month, day)
+    except ValueError:
+        await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+        return
+
+    async with db_pool.acquire() as conn:
+        deleted = await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free'", target_date)
+        count = int(deleted.split()[-1]) if deleted.startswith("DELETE") else 0
+
+    await message.answer(f"Все свободные слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).")
