@@ -40,6 +40,39 @@ async def clean_old_records(pool):
         # Ждем 1 час перед следующей проверкой
         await asyncio.sleep(3600)
 
+from datetime import time
+
+async def auto_generate_schedule(pool):
+    """Каждый день генерирует расписание на 14 дней вперед с 10:00 до 21:00."""
+    while True:
+        try:
+            today = datetime.now(YEREVAN_TZ).date()
+            
+            async with pool.acquire() as conn:
+                for i in range(3):
+                    target_date = today + timedelta(days=i)
+                    
+                    # Если на этот день вообще ничего нет (ручных или забронированных слотов)
+                    existing = await conn.fetchval('SELECT COUNT(*) FROM appointments WHERE date = $1', target_date)
+                    if existing == 0:
+                        current_dt = datetime.combine(target_date, time(10, 0))
+                        end_dt = datetime.combine(target_date, time(21, 0))
+                        
+                        while current_dt <= end_dt:
+                            await conn.execute('''
+                                INSERT INTO appointments (date, time, status) 
+                                VALUES ($1, $2, 'free') 
+                                ON CONFLICT (date, time) DO NOTHING
+                            ''', target_date, current_dt.time())
+                            current_dt += timedelta(minutes=30)
+                            
+            logger.info("Авто-генерация расписания проверена/обновлена.")
+        except Exception as e:
+            logger.error(f"Ошибка при авто-генерации: {e}")
+            
+        # Ждем 6 часов до следующей проверки (чтобы точно не пропустить новый день)
+        await asyncio.sleep(21600)
+
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
@@ -73,6 +106,9 @@ async def main():
     
     # Запускаем фоновую задачу очистки базы данных
     asyncio.create_task(clean_old_records(pool))
+    
+    # Запускаем авто-генератор расписания 
+    asyncio.create_task(auto_generate_schedule(pool))
     
     # Запускаем веб-сервер для Render, чтобы он не убил проект
     app = web.Application()
