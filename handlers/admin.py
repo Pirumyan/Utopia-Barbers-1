@@ -176,3 +176,39 @@ async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool):
         count = int(deleted.split()[-1]) if deleted.startswith("DELETE") else 0
 
     await message.answer(f"Все свободные слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).")
+
+@admin_router.message(Command("schedule"))
+async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
+    if not is_admin(message):
+        return
+
+    today = get_yerevan_date()
+    end_date = today + timedelta(days=2) # 3 дня: сегодня, завтра, послезавтра
+
+    async with db_pool.acquire() as conn:
+        appointments = await conn.fetch('''
+            SELECT a.date, a.time, u.name, u.surname, u.phone, u.telegram_id
+            FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.status = 'booked' AND a.date >= $1 AND a.date <= $2
+            ORDER BY a.date, a.time
+        ''', today, end_date)
+
+    if not appointments:
+        await message.answer("На ближайшие 3 дня записей нет.")
+        return
+
+    text = "🗓 <b>Расписание на ближайшие 3 дня:</b>\n"
+    current_date = None
+    
+    for app in appointments:
+        if app['date'] != current_date:
+            current_date = app['date']
+            text += f"\n📅 <b>{current_date.strftime('%d.%m.%Y')}</b>\n"
+        
+        username = f'<a href="tg://user?id={app["telegram_id"]}">{app["name"]} {app["surname"]}</a>'
+        text += f"⏰ {app['time'].strftime('%H:%M')} — {username} ({app['phone']})\n"
+
+    # Если текст слишком длинный, Telegram может ругаться (лимит 4096 символов).
+    # Но для 3 дней записей это вряд ли произойдет.
+    await message.answer(text, parse_mode="HTML")
