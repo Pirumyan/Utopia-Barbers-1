@@ -64,7 +64,7 @@ async def auto_generate_schedule(pool):
                                 VALUES ($1, $2, 'free') 
                                 ON CONFLICT (date, time) DO NOTHING
                             ''', target_date, current_dt.time())
-                            current_dt += timedelta(minutes=30)
+                            current_dt += timedelta(minutes=15)
                             
             logger.info("Авто-генерация расписания проверена/обновлена.")
         except Exception as e:

@@ -1,0 +1,13 @@
+--- handlers/client.py
++++ handlers/client.py
+@@ -7,9 +7,10 @@
+ import asyncpg
+ from config import ADMIN_IDS, YEREVAN_TZ
++from locales import get_text
+ 
+ client_router = Router()
+ 
+ class BookingState(StatesGroup):
++    waiting_for_service = State()
+     waiting_for_date = State()
+     waiting_for_time = State()

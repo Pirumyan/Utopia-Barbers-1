@@ -30,4 +30,15 @@ async def init_db(pool):
                 UNIQUE(date, time) -- Защита от двойной записи на уровне БД
             )
         ''')
+        
+        # Миграции (добавление новых колонок)
+        try:
+            await conn.execute('ALTER TABLE users ADD COLUMN lang VARCHAR(10) DEFAULT \'ru\'')
+        except asyncpg.exceptions.DuplicateColumnError:
+            pass
+
+        try:
+            await conn.execute('ALTER TABLE appointments ADD COLUMN service_type VARCHAR(50)')
+        except asyncpg.exceptions.DuplicateColumnError:
+            pass
         logger.info("Database initialized")

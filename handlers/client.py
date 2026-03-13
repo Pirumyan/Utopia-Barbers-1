@@ -6,10 +6,12 @@ from aiogram.fsm.state import State, StatesGroup
 from datetime import date, datetime, timedelta, time
 import asyncpg
 from config import ADMIN_IDS, YEREVAN_TZ
+from locales import get_text
 
 client_router = Router()
 
 class BookingState(StatesGroup):
+    waiting_for_service = State()
     waiting_for_date = State()
     waiting_for_time = State()
     waiting_for_name = State()
@@ -19,69 +21,110 @@ class BookingState(StatesGroup):
 def get_yerevan_now():
     return datetime.now(YEREVAN_TZ)
 
-async def get_main_menu_keyboard(tg_id: int, db_pool: asyncpg.Pool):
+async def get_user_lang(tg_id: int, db_pool: asyncpg.Pool) -> str:
+    async with db_pool.acquire() as conn:
+        lang = await conn.fetchval('SELECT lang FROM users WHERE telegram_id = $1', tg_id)
+        return lang if lang else 'ru'
+
+async def get_main_menu_keyboard(tg_id: int, db_pool: asyncpg.Pool, lang: str):
     now_dt = get_yerevan_now()
     today = now_dt.date()
     now_time = now_dt.time()
     
     async with db_pool.acquire() as conn:
         active_count = await conn.fetchval('''
-            SELECT COUNT(*) FROM appointments a
-            JOIN users u ON a.user_id = u.id
-            WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
+            SELECT COUNT(DISTINCT date::text || service_type) FROM appointments
+            WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1)
+            AND status = 'booked' AND (date > $2 OR (date = $2 AND time > $3))
         ''', tg_id, today, now_time)
 
-    buttons = [[InlineKeyboardButton(text="Записаться ✂️", callback_data="book_start")]]
+    buttons = [[InlineKeyboardButton(text=get_text("btn_book", lang), callback_data="book_start")]]
     if active_count and active_count > 0:
-        buttons.append([InlineKeyboardButton(text="Мои записи 📅", callback_data="my_appointments")])
+        buttons.append([InlineKeyboardButton(text=get_text("btn_my_apps", lang), callback_data="my_appointments")])
         
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @client_router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
     await state.clear()
-    keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool)
-    await message.answer("Добро пожаловать в барбершоп! Выберите действие ниже:", reply_markup=keyboard)
+    
+    # Check if user has selected a language
+    async with db_pool.acquire() as conn:
+        lang = await conn.fetchval('SELECT lang FROM users WHERE telegram_id = $1', message.from_user.id)
+        
+    if not lang:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+            [InlineKeyboardButton(text="🇦🇲 Հայերեն", callback_data="lang_am")],
+            [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+        ])
+        await message.answer("Выберите язык / Ընտրեք լեզուն / Choose language:", reply_markup=keyboard)
+        return
+
+    keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool, lang)
+    await message.answer(get_text('main_menu', lang), reply_markup=keyboard)
+
+@client_router.callback_query(F.data.startswith("lang_"))
+async def set_language(callback: CallbackQuery, db_pool: asyncpg.Pool):
+    lang = callback.data.split("_")[1]
+    tg_id = callback.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        # Check if user exists
+        user_exists = await conn.fetchval('SELECT id FROM users WHERE telegram_id = $1', tg_id)
+        if user_exists:
+            await conn.execute('UPDATE users SET lang = $1 WHERE telegram_id = $2', lang, tg_id)
+        else:
+            await conn.execute('INSERT INTO users (telegram_id, lang) VALUES ($1, $2) ON CONFLICT (telegram_id) DO UPDATE SET lang = EXCLUDED.lang', tg_id, lang)
+            
+    keyboard = await get_main_menu_keyboard(tg_id, db_pool, lang)
+    await callback.message.edit_text(get_text('main_menu', lang), reply_markup=keyboard)
 
 @client_router.callback_query(F.data == "back_to_main")
 async def back_to_main_callback(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
     await state.clear()
-    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
-    await callback.message.edit_text("Добро пожаловать в барбершоп! Выберите действие ниже:", reply_markup=keyboard)
+    lang = await get_user_lang(callback.from_user.id, db_pool)
+    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool, lang)
+    await callback.message.edit_text(get_text('main_menu', lang), reply_markup=keyboard)
 
 @client_router.callback_query(F.data == "my_appointments")
 async def show_my_appointments(callback: CallbackQuery, db_pool: asyncpg.Pool):
     now_dt = get_yerevan_now()
     today = now_dt.date()
     now_time = now_dt.time()
+    lang = await get_user_lang(callback.from_user.id, db_pool)
 
     async with db_pool.acquire() as conn:
-        appointments = await conn.fetch('''
-            SELECT a.id, a.date, a.time, u.name, u.surname, u.phone
+        # Group apps by service and date (MIN time)
+        apps = await conn.fetch('''
+            SELECT MIN(a.id) as id, a.date, MIN(a.time) as start_time, a.service_type
             FROM appointments a
             JOIN users u ON a.user_id = u.id
             WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
-            ORDER BY a.date, a.time
+            GROUP BY a.date, a.service_type
+            ORDER BY a.date, start_time
         ''', callback.from_user.id, today, now_time)
 
-    if not appointments:
-        await callback.answer("У вас нет активных записей.", show_alert=True)
+    if not apps:
+        await callback.answer(get_text('no_active_apps', lang), show_alert=True)
         return
 
-    text = "🗓 <b>Ваши активные записи:</b>\n\n"
+    text = get_text('your_active_apps_title', lang)
     buttons = []
     
-    for i, app in enumerate(appointments, 1):
+    for i, app in enumerate(apps, 1):
         app_date_str = app['date'].strftime('%d.%m.%Y')
-        app_time_str = app['time'].strftime('%H:%M')
-        text += f"{i}. {app_date_str} в {app_time_str}\n"
+        app_time_str = app['start_time'].strftime('%H:%M')
+        svc_name = get_text(f'service_{app["service_type"]}', lang)
         
-        # Проверяем, можно ли отменить
-        app_dt = datetime.combine(app['date'], app['time'], tzinfo=YEREVAN_TZ)
+        text += f"{i}. {app_date_str} {app_time_str} - {svc_name}\n"
+        
+        app_dt = datetime.combine(app['date'], app['start_time'], tzinfo=YEREVAN_TZ)
         if app_dt - now_dt >= timedelta(hours=1):
-            buttons.append([InlineKeyboardButton(text=f"❌ Отменить запись на {app['time'].strftime('%H:%M')}", callback_data=f"cancel_app_{app['id']}")])
+            cancel_txt = get_text('btn_cancel_app', lang, time=app_time_str)
+            buttons.append([InlineKeyboardButton(text=cancel_txt, callback_data=f"cancel_app_{app['id']}")])
             
-    buttons.append([InlineKeyboardButton(text="Назад ⬅️", callback_data="back_to_main")])
+    buttons.append([InlineKeyboardButton(text=get_text('btn_back', lang), callback_data="back_to_main")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
@@ -90,147 +133,219 @@ async def show_my_appointments(callback: CallbackQuery, db_pool: asyncpg.Pool):
 async def process_cancel_app(callback: CallbackQuery, db_pool: asyncpg.Pool, bot: Bot):
     app_id = int(callback.data.split("_")[2])
     now_dt = get_yerevan_now()
+    lang = await get_user_lang(callback.from_user.id, db_pool)
 
     async with db_pool.acquire() as conn:
         appointment = await conn.fetchrow('''
-            SELECT a.id, a.date, a.time, u.name, u.surname, u.phone, a.status
+            SELECT a.id, a.date, a.time, u.id as db_uid, u.name, u.surname, u.phone, a.status, a.service_type
             FROM appointments a
             JOIN users u ON a.user_id = u.id
             WHERE a.id = $1 AND u.telegram_id = $2
         ''', app_id, callback.from_user.id)
 
         if not appointment or appointment['status'] != 'booked':
-            await callback.answer("Запись не найдена или уже отменена.", show_alert=True)
+            await callback.answer(get_text('no_active_apps', lang), show_alert=True)
             return
             
         app_dt = datetime.combine(appointment['date'], appointment['time'], tzinfo=YEREVAN_TZ)
         
         if app_dt - now_dt < timedelta(hours=1):
-            await callback.answer("Отмена невозможна. До записи осталось менее 1 часа.", show_alert=True)
+            await callback.answer(get_text('cancel_too_late', lang), show_alert=True)
             return
 
-        await conn.execute('''
-            UPDATE appointments SET status = 'free', user_id = NULL WHERE id = $1
-        ''', app_id)
+        st = appointment['service_type']
+        slots_to_free = 1
+        if st == 'haircut': slots_to_free = 2
+        elif st == 'combo': slots_to_free = 3
+        
+        u_id = appointment['db_uid']
+        cdt = appointment['time']
+        
+        for _ in range(slots_to_free):
+            await conn.execute('''
+                UPDATE appointments SET status = 'free', user_id = NULL, service_type = NULL
+                WHERE date = $1 AND time = $2 AND user_id = $3
+            ''', appointment['date'], cdt, u_id)
+            tmp = datetime.combine(appointment['date'], cdt) + timedelta(minutes=15)
+            cdt = tmp.time()
 
-    await callback.answer("Запись успешно отменена!", show_alert=True)
+    await callback.answer(get_text('cancel_success', lang), show_alert=True)
     
-    admin_msg = f"❌ Клиент отменил запись\n\nИмя: {appointment['name']}\nФамилия: {appointment['surname']}\nТелефон: {appointment['phone']}\nДата: {appointment['date'].strftime('%d.%m.%Y')}\nВремя: {appointment['time'].strftime('%H:%M')}"
+    admin_msg = f"❌ Клиент отменил запись\n\nИмя: {appointment['name']} {appointment['surname']}\nУслуга: {st}\nТелефон: {appointment['phone']}\nДата: {appointment['date'].strftime('%d.%m.%Y')}\nВремя: {appointment['time'].strftime('%H:%M')}"
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(admin_id, admin_msg)
         except Exception:
             pass
 
-    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
-    await callback.message.edit_text("Запись отменена. Выберите действие ниже:", reply_markup=keyboard)
+    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool, lang)
+    await callback.message.edit_text(get_text('cancel_selected_menu', lang), reply_markup=keyboard)
 
 @client_router.callback_query(F.data == "book_start")
-async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
+async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool, state: FSMContext):
     now_dt = get_yerevan_now()
     today = now_dt.date()
     now_time = now_dt.time()
+    lang = await get_user_lang(callback.from_user.id, db_pool)
     
     async with db_pool.acquire() as conn:
         active_count = await conn.fetchval('''
-            SELECT COUNT(*) FROM appointments a
-            JOIN users u ON a.user_id = u.id
-            WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
+            SELECT COUNT(DISTINCT date::text || service_type) FROM appointments
+            WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1)
+            AND status = 'booked' AND (date > $2 OR (date = $2 AND time > $3))
         ''', callback.from_user.id, today, now_time)
 
         if active_count and active_count >= 2:
-            await callback.answer("У вас уже есть 2 активные записи. Больше записей создать нельзя.", show_alert=True)
+            await callback.answer(get_text('max_apps_reached', lang), show_alert=True)
             return
 
-        dates_records = await conn.fetch('''
-            SELECT DISTINCT date FROM appointments 
-            WHERE status = 'free' AND (date > $1 OR (date = $1 AND time > $2))
-            ORDER BY date
-        ''', today, now_time)
-
-    if not dates_records:
-        await callback.message.edit_text("К сожалению, свободных мест пока нет.")
-        return
-
-    buttons = []
-    row = []
-    for record in dates_records:
-        d = record['date']
-        date_str = d.strftime('%d.%m')
-        btn_data = f"select_date_{d.isoformat()}"
-        row.append(InlineKeyboardButton(text=date_str, callback_data=btn_data))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-        
-    buttons.append([InlineKeyboardButton(text="Назад ⬅️", callback_data="back_to_main")])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    buttons = [
+        [InlineKeyboardButton(text=get_text('service_haircut', lang), callback_data="service_haircut")],
+        [InlineKeyboardButton(text=get_text('service_beard', lang), callback_data="service_beard")],
+        [InlineKeyboardButton(text=get_text('service_combo', lang), callback_data="service_combo")],
+        [InlineKeyboardButton(text=get_text('btn_back', lang), callback_data="back_to_main")]
+    ]
     
-    await callback.message.edit_text("Выберите дату для записи:", reply_markup=keyboard)
+    await state.set_state(BookingState.waiting_for_service)
+    await callback.message.edit_text(get_text('choose_service', lang), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@client_router.callback_query(F.data.startswith("select_date_"))
-async def select_date(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
-    selected_date_iso = callback.data.split("_")[2]
-    selected_date = date.fromisoformat(selected_date_iso)
+@client_router.callback_query(BookingState.waiting_for_service, F.data.startswith("service_"))
+async def select_service(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
+    service = callback.data.split("_")[1]
+    lang = await get_user_lang(callback.from_user.id, db_pool)
+    
+    await state.update_data(service=service)
+    
+    num_slots = 1
+    if service == 'haircut': num_slots = 2
+    elif service == 'combo': num_slots = 3
     
     now_dt = get_yerevan_now()
     today = now_dt.date()
     now_time = now_dt.time()
-
+    
     async with db_pool.acquire() as conn:
-        # Ищем слоты на эту дату
-        if selected_date == today:
-            slots = await conn.fetch('''
-                SELECT time FROM appointments 
-                WHERE date = $1 AND status = 'free' AND time > $2
-                ORDER BY time
-            ''', selected_date, now_time)
+        all_free = await conn.fetch('''
+            SELECT date, time FROM appointments 
+            WHERE status = 'free' AND (date > $1 OR (date = $1 AND time > $2))
+            ORDER BY date, time
+        ''', today, now_time)
+        
+    from collections import defaultdict
+    free_by_date = defaultdict(list)
+    for row in all_free:
+        free_by_date[row['date']].append(row['time'])
+        
+    valid_dates = set()
+    for d, times in free_by_date.items():
+        if num_slots == 1:
+            valid_dates.add(d)
         else:
-            slots = await conn.fetch('''
-                SELECT time FROM appointments 
-                WHERE date = $1 AND status = 'free'
-                ORDER BY time
-            ''', selected_date)
-
-    if not slots:
-        await callback.answer("На эту дату слоты закончились.", show_alert=True)
-        await start_booking(callback, db_pool)
+            times.sort()
+            for i in range(len(times) - num_slots + 1):
+                is_consecutive = True
+                curr_dt = datetime.combine(d, times[i])
+                for j in range(1, num_slots):
+                    next_dt = curr_dt + timedelta(minutes=15 * j)
+                    if next_dt.time() != times[i+j]:
+                        is_consecutive = False
+                        break
+                if is_consecutive:
+                    valid_dates.add(d)
+                    break
+                    
+    if not valid_dates:
+        await callback.answer(get_text('no_free_slots', lang), show_alert=True)
         return
+        
+    sorted_dates = sorted(list(valid_dates))
+    buttons = []
+    
+    for d in sorted_dates:
+        buttons.append([InlineKeyboardButton(text=d.strftime('%d.%m.%Y'), callback_data=f"date_{d.isoformat()}")])
+        
+    buttons.append([InlineKeyboardButton(text=get_text('btn_back', lang), callback_data="book_start")])
+    
+    svc_name = get_text(f'service_{service}', lang)
+    msg_text = get_text('choose_date', lang).format(service=svc_name)
+    
+    await state.set_state(BookingState.waiting_for_date)
+    await callback.message.edit_text(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
 
-    await state.update_data(selected_date=selected_date_iso)
+@client_router.callback_query(BookingState.waiting_for_date, F.data.startswith("date_"))
+async def select_date(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
+    selected_date_str = callback.data.split("_")[1]
+    selected_date = date.fromisoformat(selected_date_str)
+    
+    await state.update_data(selected_date=selected_date_str)
+    
+    user_data = await state.get_data()
+    service = user_data.get('service', 'beard')
+    lang = await get_user_lang(callback.from_user.id, db_pool)
+    
+    num_slots = 1
+    if service == 'haircut': num_slots = 2
+    elif service == 'combo': num_slots = 3
+    
+    now_dt = get_yerevan_now()
+    today = now_dt.date()
+    now_time = now_dt.time()
+    
+    async with db_pool.acquire() as conn:
+        all_free = await conn.fetch('''
+            SELECT time FROM appointments 
+            WHERE date = $1 AND status = 'free' AND (date > $2 OR (date = $2 AND time > $3))
+            ORDER BY time
+        ''', selected_date, today, now_time)
+        
+    times = [r['time'] for r in all_free]
+    valid_times = []
+    
+    if num_slots == 1:
+        valid_times = times
+    else:
+        for i in range(len(times) - num_slots + 1):
+            is_consecutive = True
+            curr_dt = datetime.combine(selected_date, times[i])
+            for j in range(1, num_slots):
+                next_dt = curr_dt + timedelta(minutes=15 * j)
+                if next_dt.time() != times[i+j]:
+                    is_consecutive = False
+                    break
+            if is_consecutive:
+                valid_times.append(times[i])
 
+    if not valid_times:
+        await callback.answer(get_text('date_full', lang), show_alert=True)
+        return
+        
     buttons = []
     row = []
-    for slot in slots:
-        slot_time_str = slot['time'].strftime('%H:%M')
-        row.append(InlineKeyboardButton(text=slot_time_str, callback_data=f"select_time_{slot_time_str}"))
-        if len(row) == 2:
+    for t in valid_times:
+        t_str = t.strftime('%H:%M')
+        row.append(InlineKeyboardButton(text=t_str, callback_data=f"time_{t_str}"))
+        if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-        
-    buttons.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="book_start"),
-        InlineKeyboardButton(text="Отмена ❌", callback_data="cancel_booking")
-    ])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+    buttons.append([InlineKeyboardButton(text=get_text('btn_back', lang), callback_data=f"book_start")])
     
-    await callback.message.edit_text(f"Выбрана дата: {selected_date.strftime('%d.%m')}\nВыберите время:", reply_markup=keyboard)
+    msg_text = get_text('choose_time', lang).format(date=selected_date.strftime('%d.%m.%Y'))
+    
+    await state.set_state(BookingState.waiting_for_time)
+    await callback.message.edit_text(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@client_router.callback_query(F.data.startswith("select_time_"))
+@client_router.callback_query(BookingState.waiting_for_time, F.data.startswith("time_"))
 async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
+    selected_time_str = callback.data.split("_")[1]
+    lang = await get_user_lang(callback.from_user.id, db_pool)
+    
     user_data = await state.get_data()
-    selected_date_str = user_data.get('selected_date')
-    if not selected_date_str:
-        await callback.answer("Сначала выберите дату.", show_alert=True)
-        await start_booking(callback, db_pool)
-        return
-
+    selected_date_str = user_data['selected_date']
     selected_date = date.fromisoformat(selected_date_str)
-    selected_time_str = callback.data.split("_")[2]
+    
     hour, minute = map(int, selected_time_str.split(':'))
     selected_time_obj = time(hour, minute)
 
@@ -239,49 +354,59 @@ async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: async
     now_time = now_dt.time()
 
     if selected_date < today or (selected_date == today and selected_time_obj <= now_time):
-        await callback.answer("Это время уже прошло.", show_alert=True)
-        await start_booking(callback, db_pool)
+        await callback.answer(get_text('time_passed', lang), show_alert=True)
         return
 
+    service = user_data.get('service', 'beard')
+    num_slots = 1
+    if service == 'haircut': num_slots = 2
+    elif service == 'combo': num_slots = 3
+    
     async with db_pool.acquire() as conn:
-        slot = await conn.fetchrow('''
-            SELECT status FROM appointments WHERE date = $1 AND time = $2
-        ''', selected_date, selected_time_obj)
-
-    if not slot or slot['status'] != 'free':
-        await callback.answer("Это время уже занято.", show_alert=True)
-        await start_booking(callback, db_pool)
-        return
+        cdt = selected_time_obj
+        for _ in range(num_slots):
+            slot = await conn.fetchrow('''
+                SELECT status FROM appointments WHERE date = $1 AND time = $2
+            ''', selected_date, cdt)
+            if not slot or slot['status'] != 'free':
+                await callback.answer(get_text('time_taken', lang), show_alert=True)
+                return
+            tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
+            cdt = tmp.time()
 
     await state.update_data(selected_time=selected_time_str)
     await state.set_state(BookingState.waiting_for_name)
-    await callback.message.edit_text(f"Запись на {selected_date.strftime('%d.%m')} в {selected_time_str}.\nПожалуйста, введите ваше Имя:")
+    msg = get_text('ask_name', lang).format(date=selected_date.strftime('%d.%m'), time=selected_time_str)
+    await callback.message.edit_text(msg)
 
 @client_router.message(BookingState.waiting_for_name)
-async def process_name(message: Message, state: FSMContext):
+async def process_name(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     text = message.text.strip() if message.text else ""
     if len(text) < 2:
-        await message.answer("Имя слишком короткое. Пожалуйста, напишите ваше настоящее Имя:")
+        await message.answer(get_text('err_name', lang))
         return
     await state.update_data(name=text)
     await state.set_state(BookingState.waiting_for_surname)
-    await message.answer("Теперь введите вашу Фамилию:")
+    await message.answer(get_text('ask_surname', lang))
 
 @client_router.message(BookingState.waiting_for_surname)
-async def process_surname(message: Message, state: FSMContext):
+async def process_surname(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     text = message.text.strip() if message.text else ""
     if len(text) < 2:
-        await message.answer("Фамилия слишком короткая. Пожалуйста, напишите вашу настоящую Фамилию:")
+        await message.answer(get_text('err_surname', lang))
         return
     await state.update_data(surname=text)
     await state.set_state(BookingState.waiting_for_phone)
-    await message.answer("И напоследок, введите ваш Номер телефона (только цифры и знак плюс):")
+    await message.answer(get_text('ask_phone', lang))
 
 @client_router.message(BookingState.waiting_for_phone)
 async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Pool, bot: Bot):
+    lang = await get_user_lang(message.from_user.id, db_pool)
     phone = message.text.strip() if message.text else ""
     if len(phone) < 5:
-        await message.answer("Пожалуйста, введите корректный номер телефона:")
+        await message.answer(get_text('err_phone', lang))
         return
 
     user_data = await state.get_data()
@@ -291,100 +416,74 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     hour, minute = map(int, selected_time_str.split(':'))
     selected_time_obj = time(hour, minute)
     selected_date = date.fromisoformat(user_data['selected_date'])
+    service = user_data.get('service', 'beard')
+    
+    num_slots = 1
+    if service == 'haircut': num_slots = 2
+    elif service == 'combo': num_slots = 3
 
     tg_id = message.from_user.id
-    username = f"@{message.from_user.username}" if message.from_user.username else f'<a href="tg://user?id={tg_id}">Профиль клиента</a>'
+    username = f"@{message.from_user.username}" if message.from_user.username else f'<a href="tg://user?id={tg_id}">Клиент</a>'
 
     async with db_pool.acquire() as conn:
+        # Check one more time before final commit
+        cdt = selected_time_obj
+        for _ in range(num_slots):
+            slot = await conn.fetchrow('SELECT status FROM appointments WHERE date = $1 AND time = $2', selected_date, cdt)
+            if not slot or slot['status'] != 'free':
+                await message.answer(get_text('time_taken', lang))
+                await state.clear()
+                kbd = await get_main_menu_keyboard(tg_id, db_pool, lang)
+                await message.answer(get_text('main_menu', lang), reply_markup=kbd)
+                return
+            tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
+            cdt = tmp.time()
+            
+        # Register user
         user_id = await conn.fetchval('''
-            INSERT INTO users (telegram_id, name, surname, phone)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO users (telegram_id, name, surname, phone, lang)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (telegram_id) DO UPDATE 
             SET name = EXCLUDED.name, surname = EXCLUDED.surname, phone = EXCLUDED.phone
             RETURNING id
-        ''', tg_id, name, surname, phone)
+        ''', tg_id, name, surname, phone, lang)
 
-        result = await conn.execute('''
-            UPDATE appointments SET status = 'booked', user_id = $1
-            WHERE date = $2 AND time = $3 AND status = 'free'
-        ''', user_id, selected_date, selected_time_obj)
+        # Update slots
+        cdt = selected_time_obj
+        for _ in range(num_slots):
+            await conn.execute('''
+                UPDATE appointments SET status = 'booked', user_id = $1, service_type = $2
+                WHERE date = $3 AND time = $4
+            ''', user_id, service, selected_date, cdt)
+            tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
+            cdt = tmp.time()
 
-    if result == "UPDATE 0":
-        await message.answer("К сожалению, это время уже занято другим клиентом. Выберите другое время /start")
-        await state.clear()
-        return
-
-    await message.answer(f"Спасибо! Ваша запись подтверждена.\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}")
+    await state.clear()
     
-    admin_msg = f"🔔 Новая запись!\n\nИмя: {name}\nФамилия: {surname}\nТелефон: {phone}\nАккаунт: {username}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
+    svc_name = get_text(f'service_{service}', lang)
+    msg_txt = get_text('booking_success', lang).format(
+        service=svc_name,
+        date=selected_date.strftime('%d.%m.%Y'),
+        time=selected_time_str
+    )
+    
+    keyboard = await get_main_menu_keyboard(tg_id, db_pool, lang)
+    await message.answer(msg_txt, reply_markup=keyboard, parse_mode="HTML")
+
+    admin_msg = f"✅ Новая запись!\n\nИмя: {name} {surname}\nУслуга: {service}\nТелефон: {phone}\nПрофиль: {username}\nДата: {selected_date.strftime('%d.%m.%Y')}\nВремя: {selected_time_str}"
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(admin_id, admin_msg, parse_mode="HTML")
         except Exception:
             pass
 
-    await state.clear()
-
-
-@client_router.callback_query(F.data == "cancel_booking")
-async def cancel_booking_process(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
-    await state.clear()
-    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
-    await callback.message.edit_text("Запись прервана. Выберите действие ниже:", reply_markup=keyboard)
-
-@client_router.message(Command("my_cancel"))
-async def client_cancel(message: Message, db_pool: asyncpg.Pool, bot: Bot):
-    now_dt = get_yerevan_now()
-    today = now_dt.date()
-    now_time = now_dt.time()
-
-    async with db_pool.acquire() as conn:
-        # Ищем только будущие активные записи
-        appointment = await conn.fetchrow('''
-            SELECT a.id, a.date, a.time, u.name, u.surname, u.phone
-            FROM appointments a
-            JOIN users u ON a.user_id = u.id
-            WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
-            ORDER BY a.date, a.time LIMIT 1
-        ''', message.from_user.id, today, now_time)
-
-        if not appointment:
-            await message.answer("У вас нет предстоящих записей, которые можно было бы отменить.")
-            return
-
-        app_dt = datetime.combine(appointment['date'], appointment['time'], tzinfo=YEREVAN_TZ)
-        
-        # Разница во времени
-        if app_dt - now_dt < timedelta(hours=1):
-            await message.answer(f"Отмена невозможна. Ваша запись состоится {appointment['date'].strftime('%d.%m')} в {appointment['time'].strftime('%H:%M')}, до неё осталось менее 1 часа.")
-            
-            admin_msg = f"⚠️ Попытка отмены менее чем за час!\nКлиент: {appointment['name']} {appointment['surname']} ({appointment['phone']})\nЗапись: {appointment['date'].strftime('%d.%m')} в {appointment['time'].strftime('%H:%M')}"
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(admin_id, admin_msg)
-                except Exception:
-                    pass
-            return
-
-        # Отменяем (слот становится free)
-        await conn.execute('''
-            UPDATE appointments SET status = 'free', user_id = NULL WHERE id = $1
-        ''', appointment['id'])
-
-    await message.answer(f"Ваша запись на {appointment['date'].strftime('%d.%m')} в {appointment['time'].strftime('%H:%M')} успешно отменена.")
-
-    admin_msg = f"❌ Клиент отменил запись\n\nИмя: {appointment['name']}\nФамилия: {appointment['surname']}\nТелефон: {appointment['phone']}\nДата: {appointment['date'].strftime('%d.%m.%Y')}\nВремя: {appointment['time'].strftime('%H:%M')}"
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, admin_msg)
-        except Exception:
-            pass
-
 @client_router.message()
 async def catch_all_messages(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
     current_state = await state.get_state()
+    lang = await get_user_lang(message.from_user.id, db_pool)
+    
     if current_state is None:
-        keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool)
-        await message.answer("Пожалуйста, используйте кнопки ниже для записи или отмены:", reply_markup=keyboard)
+        keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool, lang)
+        await message.answer(get_text('catch_all_menu', lang), reply_markup=keyboard)
     else:
-        await message.answer("Пожалуйста, следуйте инструкциям на экране или нажмите /start для сброса.")
+        await message.answer(get_text('catch_all_input', lang))

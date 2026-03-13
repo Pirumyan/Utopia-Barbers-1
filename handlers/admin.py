@@ -56,7 +56,7 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
     start_time = time(sh, sm)
     end_time = time(eh, em)
 
-    # Генерируем слоты каждые 30 минут
+    # Генерируем слоты каждые 15 минут
     slots_created = 0
     current_dt = datetime.combine(target_date, start_time)
     end_dt = datetime.combine(target_date, end_time)
@@ -76,7 +76,7 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
                 slots_created += 1
             except Exception:
                 pass
-            current_dt += timedelta(minutes=30)
+            current_dt += timedelta(minutes=15)
 
     await message.answer(f"Рабочий день на {target_date.strftime('%d.%m.%Y')} создан с {start_time.strftime('%H:%M')} до {end_time.strftime('%H:%M')}.\nСоздано слотов: {slots_created}.")
 
@@ -151,7 +151,7 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
 
     async with db_pool.acquire() as conn:
         appointment = await conn.fetchrow('''
-            SELECT a.id, a.user_id, u.telegram_id 
+            SELECT a.id, a.user_id, u.telegram_id, a.service_type 
             FROM appointments a 
             JOIN users u ON a.user_id = u.id 
             WHERE a.date = $1 AND a.time = $2 AND a.status = 'booked'
@@ -161,10 +161,19 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             await message.answer(f"На {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} нет записей клиентов.")
             return
 
-        await conn.execute('''
-            UPDATE appointments SET status = 'free', user_id = NULL 
-            WHERE id = $1
-        ''', appointment['id'])
+        st = appointment['service_type']
+        slots_to_free = 1
+        if st == 'haircut': slots_to_free = 2
+        elif st == 'combo': slots_to_free = 3
+        
+        cdt = cancel_time
+        for _ in range(slots_to_free):
+            await conn.execute('''
+                UPDATE appointments SET status = 'free', user_id = NULL, service_type = NULL
+                WHERE date = $1 AND time = $2 AND user_id = $3
+            ''', target_date, cdt, appointment['user_id'])
+            tmp = datetime.combine(target_date, cdt) + timedelta(minutes=15)
+            cdt = tmp.time()
 
         await message.answer(f"Запись клиента на {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} отменена. Слот снова свободен.")
 
@@ -228,7 +237,7 @@ async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
 
     async with db_pool.acquire() as conn:
         appointments = await conn.fetch('''
-            SELECT a.date, a.time, u.name, u.surname, u.phone, u.telegram_id
+            SELECT a.date, a.time, u.name, u.surname, u.phone, u.telegram_id, a.service_type
             FROM appointments a
             JOIN users u ON a.user_id = u.id
             WHERE a.status = 'booked' AND a.date >= $1 AND a.date <= $2
@@ -241,14 +250,26 @@ async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
 
     text = "🗓 <b>Расписание на ближайшие 3 дня:</b>\n"
     current_date = None
+    last_print = None
+    
+    # Словарь перевода для админа (на русском)
+    svc_names = {
+        'haircut': 'Стрижка',
+        'beard': 'Борода',
+        'combo': 'Стрижка+Борода'
+    }
     
     for app in appointments:
         if app['date'] != current_date:
             current_date = app['date']
             text += f"\n📅 <b>{current_date.strftime('%d.%m.%Y')}</b>\n"
         
-        username = f'<a href="tg://user?id={app["telegram_id"]}">{app["name"]} {app["surname"]}</a>'
-        text += f"⏰ {app['time'].strftime('%H:%M')} — {username} ({app['phone']})\n"
+        uid = f"{app['date']}_{app['telegram_id']}_{app['service_type']}"
+        if uid != last_print:
+            username = f'<a href="tg://user?id={app["telegram_id"]}">{app["name"]} {app["surname"]}</a>'
+            svc_name = svc_names.get(app['service_type'], 'Услуга')
+            text += f"⏰ {app['time'].strftime('%H:%M')} — {username} ({app['phone']}) [{svc_name}]\n"
+            last_print = uid
 
     # Если текст слишком длинный, Telegram может ругаться (лимит 4096 символов).
     # Но для 3 дней записей это вряд ли произойдет.
@@ -292,6 +313,6 @@ async def cmd_workday(message: Message, db_pool: asyncpg.Pool):
                 slots_created += 1
             except Exception:
                 pass
-            current_dt += timedelta(minutes=30)
+            current_dt += timedelta(minutes=15)
 
     await message.answer(f"Выходной отменен! Стандартный рабочий день на {target_date.strftime('%d.%m.%Y')} создан (с 10:00 до 21:00).\nВосстановлено слотов: {slots_created}.")
