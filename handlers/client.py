@@ -25,6 +25,7 @@ async def cmd_start(message: Message):
 @client_router.callback_query(F.data == "book_start")
 async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
     today = date.today()
+    now_time = datetime.now().time()
     
     async with db_pool.acquire() as conn:
         # Проверяем антиспам (максимум 2 активные записи)
@@ -41,9 +42,9 @@ async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
         # Ищем свободные слоты на сегодня
         slots = await conn.fetch('''
             SELECT time FROM appointments 
-            WHERE date = $1 AND status = 'free' 
+            WHERE date = $1 AND status = 'free' AND time > $2
             ORDER BY time
-        ''', today)
+        ''', today, now_time)
 
     if not slots:
         await callback.message.edit_text("К сожалению, на сегодня нет свободных мест.")
@@ -72,6 +73,13 @@ async def select_time(callback: CallbackQuery, state: FSMContext, db_pool: async
     hour, minute = map(int, selected_time_str.split(':'))
     selected_time_obj = time(hour, minute)
     today = date.today()
+    now_time = datetime.now().time()
+
+    if selected_time_obj <= now_time:
+        await callback.answer("Это время уже прошло.", show_alert=True)
+        # Перезагружаем слоты
+        await start_booking(callback, db_pool)
+        return
 
     # Проверка, не заняли ли слот пока пользователь думал
     async with db_pool.acquire() as conn:
