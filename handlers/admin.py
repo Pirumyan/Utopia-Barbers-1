@@ -218,7 +218,7 @@ async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool, bot: Bot):
 
     await message.answer(f"Все слоты ({count} шт.) на {target_date.strftime('%d.%m.%Y')} удалены (назначен Выходной).\nКлиентов, чьи записи были отменены: {len(booked_apps)}.")
 
-@admin_router.message(Command("schedule"))
+@admin_router.message(Command("schedule", "shedule"))
 async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
     if not is_admin(message):
         return
