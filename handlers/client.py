@@ -19,13 +19,111 @@ class BookingState(StatesGroup):
 def get_yerevan_now():
     return datetime.now(YEREVAN_TZ)
 
+async def get_main_menu_keyboard(tg_id: int, db_pool: asyncpg.Pool):
+    now_dt = get_yerevan_now()
+    today = now_dt.date()
+    now_time = now_dt.time()
+    
+    async with db_pool.acquire() as conn:
+        active_count = await conn.fetchval('''
+            SELECT COUNT(*) FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
+        ''', tg_id, today, now_time)
+
+    buttons = [[InlineKeyboardButton(text="Записаться ✂️", callback_data="book_start")]]
+    if active_count and active_count > 0:
+        buttons.append([InlineKeyboardButton(text="Мои записи 📅", callback_data="my_appointments")])
+        
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @client_router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
     await state.clear()
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Записаться ✂️", callback_data="book_start")]
-    ])
-    await message.answer("Добро пожаловать в барбершоп! Нажмите кнопку ниже, чтобы записаться.", reply_markup=keyboard)
+    keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool)
+    await message.answer("Добро пожаловать в барбершоп! Выберите действие ниже:", reply_markup=keyboard)
+
+@client_router.callback_query(F.data == "back_to_main")
+async def back_to_main_callback(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
+    await state.clear()
+    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
+    await callback.message.edit_text("Добро пожаловать в барбершоп! Выберите действие ниже:", reply_markup=keyboard)
+
+@client_router.callback_query(F.data == "my_appointments")
+async def show_my_appointments(callback: CallbackQuery, db_pool: asyncpg.Pool):
+    now_dt = get_yerevan_now()
+    today = now_dt.date()
+    now_time = now_dt.time()
+
+    async with db_pool.acquire() as conn:
+        appointments = await conn.fetch('''
+            SELECT a.id, a.date, a.time, u.name, u.surname, u.phone
+            FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE u.telegram_id = $1 AND a.status = 'booked' AND (a.date > $2 OR (a.date = $2 AND a.time > $3))
+            ORDER BY a.date, a.time
+        ''', callback.from_user.id, today, now_time)
+
+    if not appointments:
+        await callback.answer("У вас нет активных записей.", show_alert=True)
+        return
+
+    text = "🗓 <b>Ваши активные записи:</b>\n\n"
+    buttons = []
+    
+    for i, app in enumerate(appointments, 1):
+        app_date_str = app['date'].strftime('%d.%m.%Y')
+        app_time_str = app['time'].strftime('%H:%M')
+        text += f"{i}. {app_date_str} в {app_time_str}\n"
+        
+        # Проверяем, можно ли отменить
+        app_dt = datetime.combine(app['date'], app['time'], tzinfo=YEREVAN_TZ)
+        if app_dt - now_dt >= timedelta(hours=1):
+            buttons.append([InlineKeyboardButton(text=f"❌ Отменить запись на {app['time'].strftime('%H:%M')}", callback_data=f"cancel_app_{app['id']}")])
+            
+    buttons.append([InlineKeyboardButton(text="Назад ⬅️", callback_data="back_to_main")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+@client_router.callback_query(F.data.startswith("cancel_app_"))
+async def process_cancel_app(callback: CallbackQuery, db_pool: asyncpg.Pool, bot: Bot):
+    app_id = int(callback.data.split("_")[2])
+    now_dt = get_yerevan_now()
+
+    async with db_pool.acquire() as conn:
+        appointment = await conn.fetchrow('''
+            SELECT a.id, a.date, a.time, u.name, u.surname, u.phone, a.status
+            FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.id = $1 AND u.telegram_id = $2
+        ''', app_id, callback.from_user.id)
+
+        if not appointment or appointment['status'] != 'booked':
+            await callback.answer("Запись не найдена или уже отменена.", show_alert=True)
+            return
+            
+        app_dt = datetime.combine(appointment['date'], appointment['time'], tzinfo=YEREVAN_TZ)
+        
+        if app_dt - now_dt < timedelta(hours=1):
+            await callback.answer("Отмена невозможна. До записи осталось менее 1 часа.", show_alert=True)
+            return
+
+        await conn.execute('''
+            UPDATE appointments SET status = 'free', user_id = NULL WHERE id = $1
+        ''', app_id)
+
+    await callback.answer("Запись успешно отменена!", show_alert=True)
+    
+    admin_msg = f"❌ Клиент отменил запись\n\nИмя: {appointment['name']}\nФамилия: {appointment['surname']}\nТелефон: {appointment['phone']}\nДата: {appointment['date'].strftime('%d.%m.%Y')}\nВремя: {appointment['time'].strftime('%H:%M')}"
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_msg)
+        except Exception:
+            pass
+
+    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
+    await callback.message.edit_text("Запись отменена. Выберите действие ниже:", reply_markup=keyboard)
 
 @client_router.callback_query(F.data == "book_start")
 async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
@@ -67,7 +165,7 @@ async def start_booking(callback: CallbackQuery, db_pool: asyncpg.Pool):
     if row:
         buttons.append(row)
         
-    buttons.append([InlineKeyboardButton(text="Отмена ❌", callback_data="cancel_booking")])
+    buttons.append([InlineKeyboardButton(text="Назад ⬅️", callback_data="back_to_main")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     await callback.message.edit_text("Выберите дату для записи:", reply_markup=keyboard)
@@ -229,9 +327,10 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
 
 
 @client_router.callback_query(F.data == "cancel_booking")
-async def cancel_booking_process(callback: CallbackQuery, state: FSMContext):
+async def cancel_booking_process(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
     await state.clear()
-    await callback.message.edit_text("Запись прервана.")
+    keyboard = await get_main_menu_keyboard(callback.from_user.id, db_pool)
+    await callback.message.edit_text("Запись прервана. Выберите действие ниже:", reply_markup=keyboard)
 
 @client_router.message(Command("my_cancel"))
 async def client_cancel(message: Message, db_pool: asyncpg.Pool, bot: Bot):
