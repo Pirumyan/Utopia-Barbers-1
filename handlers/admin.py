@@ -234,3 +234,45 @@ async def cmd_schedule(message: Message, db_pool: asyncpg.Pool):
     # Если текст слишком длинный, Telegram может ругаться (лимит 4096 символов).
     # Но для 3 дней записей это вряд ли произойдет.
     await message.answer(text, parse_mode="HTML")
+
+@admin_router.message(Command("workday"))
+async def cmd_workday(message: Message, db_pool: asyncpg.Pool):
+    if not is_admin(message):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Формат: /workday DD.MM")
+        return
+
+    try:
+        day, month = map(int, args[1].split('.'))
+        target_date = date(get_yerevan_date().year, month, day)
+    except ValueError:
+        await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+        return
+
+    start_time = time(10, 0)
+    end_time = time(21, 0)
+    slots_created = 0
+    current_dt = datetime.combine(target_date, start_time)
+    end_dt = datetime.combine(target_date, end_time)
+
+    async with db_pool.acquire() as conn:
+        # Сначала удаляем старые свободные слоты (если был dayoff, удалять нечего, но на всякий случай)
+        await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free'", target_date)
+        
+        while current_dt <= end_dt:
+            slot_time = current_dt.time()
+            try:
+                await conn.execute('''
+                    INSERT INTO appointments (date, time, status) 
+                    VALUES ($1, $2, 'free') 
+                    ON CONFLICT (date, time) DO NOTHING
+                ''', target_date, slot_time)
+                slots_created += 1
+            except Exception:
+                pass
+            current_dt += timedelta(minutes=30)
+
+    await message.answer(f"Выходной отменен! Стандартный рабочий день на {target_date.strftime('%d.%m.%Y')} создан (с 10:00 до 21:00).\nВосстановлено слотов: {slots_created}.")

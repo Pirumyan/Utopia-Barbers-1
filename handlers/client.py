@@ -379,3 +379,12 @@ async def client_cancel(message: Message, db_pool: asyncpg.Pool, bot: Bot):
             await bot.send_message(admin_id, admin_msg)
         except Exception:
             pass
+
+@client_router.message()
+async def catch_all_messages(message: Message, state: FSMContext, db_pool: asyncpg.Pool):
+    current_state = await state.get_state()
+    if current_state is None:
+        keyboard = await get_main_menu_keyboard(message.from_user.id, db_pool)
+        await message.answer("Пожалуйста, используйте кнопки ниже для записи или отмены:", reply_markup=keyboard)
+    else:
+        await message.answer("Пожалуйста, следуйте инструкциям на экране или нажмите /start для сброса.")
