@@ -28,6 +28,11 @@ TEXTS = {
         'am': "Հետ ⬅️",
         'en': "Back ⬅️"
     },
+    'btn_change_lang': {
+        'ru': "Сменить язык 🌍",
+        'am': "Փոխել լեզուն 🌍",
+        'en': "Change language 🌍"
+    },
     'btn_cancel': {
         'ru': "Отмена ❌",
         'am': "Չեղարկել ❌",

@@ -42,6 +42,8 @@ async def get_main_menu_keyboard(tg_id: int, db_pool: asyncpg.Pool, lang: str):
     if active_count and active_count > 0:
         buttons.append([InlineKeyboardButton(text=get_text("btn_my_apps", lang), callback_data="my_appointments")])
         
+    buttons.append([InlineKeyboardButton(text=get_text("btn_change_lang", lang), callback_data="change_lang")])
+        
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @client_router.message(Command("start"))
@@ -79,6 +81,15 @@ async def set_language(callback: CallbackQuery, db_pool: asyncpg.Pool):
             
     keyboard = await get_main_menu_keyboard(tg_id, db_pool, lang)
     await callback.message.edit_text(get_text('main_menu', lang), reply_markup=keyboard)
+
+@client_router.callback_query(F.data == "change_lang")
+async def process_change_lang(callback: CallbackQuery):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton(text="🇦🇲 Հայերեն", callback_data="lang_am")],
+        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+    ])
+    await callback.message.edit_text("Выберите язык / Ընտրեք լեզուն / Choose language:", reply_markup=keyboard)
 
 @client_router.callback_query(F.data == "back_to_main")
 async def back_to_main_callback(callback: CallbackQuery, state: FSMContext, db_pool: asyncpg.Pool):
