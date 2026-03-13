@@ -85,19 +85,31 @@ async def cmd_busy(message: Message, db_pool: asyncpg.Pool):
     if not is_admin(message):
         return
 
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("Формат: /busy HH:MM")
+    args = message.text.split()[1:]
+    
+    if len(args) == 1:
+        # Без даты, сегодня
+        target_date = get_yerevan_date()
+        time_str = args[0]
+    elif len(args) == 2:
+        # С датой
+        datestr, time_str = args
+        try:
+            day, month = map(int, datestr.split('.'))
+            target_date = date(get_yerevan_date().year, month, day)
+        except ValueError:
+            await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+            return
+    else:
+        await message.answer("Формат:\n/busy HH:MM (на сегодня)\nили\n/busy DD.MM HH:MM (на конкретный день)")
         return
 
     try:
-        hour, minute = map(int, args[1].split(':'))
+        hour, minute = map(int, time_str.split(':'))
         busy_time = time(hour, minute)
     except ValueError:
-        await message.answer("Неверный формат времени.")
+        await message.answer("Неверный формат времени HH:MM.")
         return
-
-    target_date = get_yerevan_date()
 
     async with db_pool.acquire() as conn:
         await conn.execute('''
@@ -106,26 +118,36 @@ async def cmd_busy(message: Message, db_pool: asyncpg.Pool):
             ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL
         ''', target_date, busy_time)
 
-    await message.answer(f"Время {busy_time.strftime('%H:%M')} отмечено как занятое на сегодня.")
+    await message.answer(f"Время {busy_time.strftime('%H:%M')} отмечено как занятое на {target_date.strftime('%d.%m.%Y')}.")
 
 @admin_router.message(Command("cancel"))
 async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
     if not is_admin(message):
         return
 
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("Формат: /cancel HH:MM")
+    args = message.text.split()[1:]
+    
+    if len(args) == 1:
+        target_date = get_yerevan_date()
+        time_str = args[0]
+    elif len(args) == 2:
+        datestr, time_str = args
+        try:
+            day, month = map(int, datestr.split('.'))
+            target_date = date(get_yerevan_date().year, month, day)
+        except ValueError:
+            await message.answer("Ошибка формата даты. Используйте DD.MM, например: 14.03")
+            return
+    else:
+        await message.answer("Формат:\n/cancel HH:MM (на сегодня)\nили\n/cancel DD.MM HH:MM (на конкретный день)")
         return
 
     try:
-        hour, minute = map(int, args[1].split(':'))
+        hour, minute = map(int, time_str.split(':'))
         cancel_time = time(hour, minute)
     except ValueError:
-        await message.answer("Неверный формат времени.")
+        await message.answer("Неверный формат времени HH:MM.")
         return
-
-    target_date = get_yerevan_date()
 
     async with db_pool.acquire() as conn:
         appointment = await conn.fetchrow('''
@@ -136,7 +158,7 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
         ''', target_date, cancel_time)
 
         if not appointment:
-            await message.answer("На это время нет записей.")
+            await message.answer(f"На {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} нет записей клиентов.")
             return
 
         await conn.execute('''
@@ -144,7 +166,7 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             WHERE id = $1
         ''', appointment['id'])
 
-        await message.answer(f"Запись на {cancel_time.strftime('%H:%M')} отменена. Слот снова свободен.")
+        await message.answer(f"Запись клиента на {target_date.strftime('%d.%m')} в {cancel_time.strftime('%H:%M')} отменена. Слот снова свободен.")
 
         try:
             await bot.send_message(
