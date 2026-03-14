@@ -214,6 +214,95 @@ async def cmd_busy(message: Message, db_pool: asyncpg.Pool, bot: Bot):
     elif end_time:
         await message.answer(get_text('admin_busy_success_period', lang, start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created, date=target_date.strftime('%d.%m.%Y')))
 
+@admin_router.message(Command("unbusy"))
+async def cmd_unbusy(message: Message, db_pool: asyncpg.Pool):
+    lang = await get_user_lang(message.from_user.id, db_pool)
+    if not is_admin(message):
+        await message.answer(get_text('admin_no_access', lang))
+        return
+
+    args = message.text.split()[1:]
+    target_date = get_yerevan_date()
+    start_time_str = None
+    end_time_str = None
+    
+    if len(args) == 1:
+        # Без даты, сегодня, 1 время: HH:MM
+        start_time_str = args[0]
+    elif len(args) == 2:
+        if '.' in args[0]:
+            # С датой, 1 время: DD.MM HH:MM
+            datestr, start_time_str = args
+            try:
+                day, month = map(int, datestr.split('.'))
+                target_date = date(get_yerevan_date().year, month, day)
+            except ValueError:
+                await message.answer(get_text('admin_format_invalid_date', lang))
+                return
+        else:
+            # Сегодня, период: HH:MM HH:MM
+            start_time_str, end_time_str = args
+    elif len(args) == 3:
+        # С датой, период: DD.MM HH:MM HH:MM
+        datestr, start_time_str, end_time_str = args
+        try:
+            day, month = map(int, datestr.split('.'))
+            target_date = date(get_yerevan_date().year, month, day)
+        except ValueError:
+            await message.answer(get_text('admin_format_invalid_date', lang))
+            return
+    else:
+        await message.answer(get_text('admin_format_unbusy', lang))
+        return
+
+    try:
+        sh, sm = map(int, start_time_str.split(':'))
+        start_time = time(sh, sm)
+    except ValueError:
+        await message.answer(get_text('admin_format_invalid_time', lang))
+        return
+
+    end_time = None
+    if end_time_str:
+        try:
+            eh, em = map(int, end_time_str.split(':'))
+            end_time = time(eh, em)
+        except ValueError:
+            await message.answer(get_text('admin_format_invalid_time', lang))
+            return
+
+    async with db_pool.acquire() as conn:
+        slots_freed = 0
+        current_dt = datetime.combine(target_date, start_time)
+        
+        target_times = []
+        if not end_time:
+            target_times.append(start_time)
+        else:
+            end_dt = datetime.combine(target_date, end_time)
+            while current_dt < end_dt:
+                target_times.append(current_dt.time())
+                current_dt += timedelta(minutes=15)
+                
+        for t in target_times:
+            # Only unbusy if it was changed to busy earlier (or just ensure it's free now)
+            # If it was booked by client we probably shouldn't override it, but /busy doesn't care for booked... Wait, /unbusy just frees it.
+            # "ON CONFLICT (date, time) DO UPDATE SET status = 'free' WHERE appointments.status = 'busy'"
+            await conn.execute('''
+                INSERT INTO appointments (date, time, status) 
+                VALUES ($1, $2, 'free')
+                ON CONFLICT (date, time) DO UPDATE SET status = 'free'
+                WHERE appointments.status = 'busy'
+            ''', target_date, t)
+            slots_freed += 1
+
+    if slots_freed == 0 and end_time:
+        await message.answer(get_text('admin_unbusy_fail', lang))
+    elif not end_time:
+        await message.answer(get_text('admin_unbusy_success_single', lang, time=start_time.strftime('%H:%M'), date=target_date.strftime('%d.%m.%Y')))
+    elif end_time:
+        await message.answer(get_text('admin_unbusy_success_period', lang, start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_freed, date=target_date.strftime('%d.%m.%Y')))
+
 @admin_router.message(Command("cancel"))
 async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
     lang = await get_user_lang(message.from_user.id, db_pool)

@@ -161,6 +161,11 @@ TEXTS = {
         'am': "Խնդրում ենք մուտքագրել ճիշտ հեռախոսահամար:",
         'en': "Please enter a valid phone number:"
     },
+    'err_phone_invalid': {
+        'ru': "Номер телефона должен содержать только цифры (и может начинаться с '+'). Буквы не допускаются.",
+        'am': "Հեռախոսահամարը պետք է պարունակի միայն թվեր (և կարող է սկսվել '+'-ով): Տառեր չեն թույլատրվում:",
+        'en': "Phone number must contain only digits (and can start with '+'). Letters are not allowed."
+    },
     'booking_success': {
         'ru': "✅ Вы успешно записаны на <b>{service}</b>!\n📅 Дата: {date}\n⏰ Время: {time}",
         'am': "✅ Դուք հաջողությամբ գրանցվել եք <b>{service}</b>-ի համար:\n📅 Ամսաթիվ: {date}\n⏰ Ժամ: {time}",
@@ -212,6 +217,26 @@ TEXTS = {
         'ru': "Не заблокировано ни одного слота. Проверьте правильность времени от и до.",
         'am': "Ոչ մի տեղ չի արգելափակվել: Ստուգեք ժամանակի ճշտությունը:",
         'en': "No slots were blocked. Check the correctness of the time."
+    },
+    'admin_format_unbusy': {
+        'ru': "Формат:\n1 слот: /unbusy HH:MM или /unbusy DD.MM HH:MM\nНесколько слотов от и до: /unbusy HH:MM HH:MM или /unbusy DD.MM HH:MM HH:MM",
+        'am': "Ձևաչափ:\n1 տեղ՝ /unbusy HH:MM կամ /unbusy DD.MM HH:MM\nՄի քանի տեղ՝ /unbusy HH:MM HH:MM կամ /unbusy DD.MM HH:MM HH:MM",
+        'en': "Format:\n1 slot: /unbusy HH:MM or /unbusy DD.MM HH:MM\nMultiple slots: /unbusy HH:MM HH:MM or /unbusy DD.MM HH:MM HH:MM"
+    },
+    'admin_unbusy_success_single': {
+        'ru': "Время {time} снова доступно для записи на {date}.",
+        'am': "{time} ժամը կրկին հասանելի է գրանցման համար {date}-ին:",
+        'en': "Time {time} is available for booking again on {date}."
+    },
+    'admin_unbusy_success_period': {
+        'ru': "Период с {start} до {end} ({count} слотов) снова доступен для записи на {date}.",
+        'am': "Ժամանակահատվածը {start}-ից մինչև {end} ({count} տեղ) կրկին հասանելի է գրանցման համար {date}-ին:",
+        'en': "Period from {start} to {end} ({count} slots) is available for booking again on {date}."
+    },
+    'admin_unbusy_fail': {
+        'ru': "Слоты не были освобождены. Возможно они и так были свободны или указано неверное время.",
+        'am': "Տեղերը չեն ազատվել: Հնարավոր է, որ դրանք արդեն ազատ են կամ նշվել է սխալ ժամանակ:",
+        'en': "Slots were not freed. Perhaps they were already free or the wrong time was specified."
     },
     'admin_format_cancel': {
         'ru': "Формат:\n/cancel HH:MM (на сегодня)\nили\n/cancel DD.MM HH:MM (на конкретный день)",

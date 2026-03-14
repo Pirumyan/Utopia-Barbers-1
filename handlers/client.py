@@ -418,6 +418,12 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
         await message.answer(get_text('err_phone', lang))
         return
 
+    # Validate phone format: optional leading '+', then only digits. No letters allowed.
+    check_phone = phone[1:] if phone.startswith('+') else phone
+    if not check_phone.isdigit():
+        await message.answer(get_text('err_phone_invalid', lang))
+        return
+
     user_data = await state.get_data()
     name = user_data['name']
     surname = user_data['surname']
@@ -435,12 +441,13 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
     username = f"@{message.from_user.username}" if message.from_user.username else f'<a href="tg://user?id={tg_id}">Клиент</a>'
 
     async with db_pool.acquire() as conn:
-        # Check one more time before final commit
-        cdt = selected_time_obj
-        for _ in range(num_slots):
-            slot = await conn.fetchrow('SELECT status FROM appointments WHERE date = $1 AND time = $2', selected_date, cdt)
-            if not slot or slot['status'] != 'free':
-                await message.answer(get_text('time_taken', lang))
+        async with conn.transaction():
+            # Check one more time before final commit with FOR UPDATE lock
+            cdt = selected_time_obj
+            for _ in range(num_slots):
+                slot = await conn.fetchrow('SELECT status FROM appointments WHERE date = $1 AND time = $2 FOR UPDATE', selected_date, cdt)
+                if not slot or slot['status'] != 'free':
+                    await message.answer(get_text('time_taken', lang))
                 await state.clear()
                 kbd = await get_main_menu_keyboard(tg_id, db_pool, lang)
                 await message.answer(get_text('main_menu', lang), reply_markup=kbd)
