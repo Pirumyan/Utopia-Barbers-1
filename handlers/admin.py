@@ -84,7 +84,7 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
     await message.answer(get_text('admin_startday_success', lang, date=target_date.strftime('%d.%m.%Y'), start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created))
 
 @admin_router.message(Command("busy"))
-async def cmd_busy(message: Message, db_pool: asyncpg.Pool):
+async def cmd_busy(message: Message, db_pool: asyncpg.Pool, bot: Bot):
     lang = await get_user_lang(message.from_user.id, db_pool)
     if not is_admin(message):
         await message.answer(get_text('admin_no_access', lang))
@@ -144,26 +144,68 @@ async def cmd_busy(message: Message, db_pool: asyncpg.Pool):
         slots_created = 0
         current_dt = datetime.combine(target_date, start_time)
         
+        target_times = []
         if not end_time:
-            # Точечная блокировка одного слота
+            target_times.append(start_time)
+        else:
+            end_dt = datetime.combine(target_date, end_time)
+            while current_dt < end_dt:
+                target_times.append(current_dt.time())
+                current_dt += timedelta(minutes=15)
+                
+        cancelled_users = {}
+        
+        for t in target_times:
+            app = await conn.fetchrow('''
+                SELECT a.user_id, u.telegram_id, u.name, u.lang as client_lang, a.service_type
+                FROM appointments a JOIN users u ON a.user_id = u.id
+                WHERE a.date = $1 AND a.time = $2 AND a.status = 'booked'
+            ''', target_date, t)
+            
+            if app:
+                user_id = app['user_id']
+                tg_id = app['telegram_id']
+                all_slots = await conn.fetch('''
+                    SELECT time FROM appointments 
+                    WHERE date = $1 AND user_id = $2 AND service_type = $3 ORDER BY time
+                ''', target_date, user_id, app['service_type'])
+                
+                block = []
+                current_block = []
+                for row in all_slots:
+                    slot_t = row['time']
+                    if not current_block: current_block.append(slot_t)
+                    else:
+                        prev_t = current_block[-1]
+                        if (datetime.combine(target_date, slot_t) - datetime.combine(target_date, prev_t)).total_seconds() == 900:
+                            current_block.append(slot_t)
+                        else:
+                            if t in current_block: block = current_block
+                            current_block = [slot_t]
+                if t in current_block: block = current_block
+                
+                for bt in block:
+                    await conn.execute('''
+                        UPDATE appointments SET status = 'free', user_id = NULL, service_type = NULL
+                        WHERE date = $1 AND time = $2
+                    ''', target_date, bt)
+                    
+                if tg_id not in cancelled_users:
+                    cancelled_users[tg_id] = {'lang': app['client_lang'] if app['client_lang'] else 'ru', 'time': block[0]}
+                    
+        for t in target_times:
             await conn.execute('''
                 INSERT INTO appointments (date, time, status) 
                 VALUES ($1, $2, 'busy')
                 ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL, service_type = NULL
-            ''', target_date, start_time)
-            slots_created = 1
-        else:
-            # Периодическая блокировка
-            end_dt = datetime.combine(target_date, end_time)
-            while current_dt < end_dt:
-                busy_time = current_dt.time()
-                await conn.execute('''
-                    INSERT INTO appointments (date, time, status) 
-                    VALUES ($1, $2, 'busy')
-                    ON CONFLICT (date, time) DO UPDATE SET status = 'busy', user_id = NULL, service_type = NULL
-                ''', target_date, busy_time)
-                slots_created += 1
-                current_dt += timedelta(minutes=15)
+            ''', target_date, t)
+            slots_created += 1
+
+    for tg_id, info in cancelled_users.items():
+        try:
+            await bot.send_message(tg_id, get_text('admin_cancel_notify_client', info['lang']))
+        except Exception:
+            pass
 
     if slots_created == 0 and end_time:
         await message.answer(get_text('admin_busy_fail', lang))
@@ -215,21 +257,37 @@ async def cmd_cancel_admin(message: Message, db_pool: asyncpg.Pool, bot):
             await message.answer(get_text('admin_cancel_not_found', lang, date=target_date.strftime('%d.%m'), time=cancel_time.strftime('%H:%M')))
             return
 
+        user_id = appointment['user_id']
         st = appointment['service_type']
-        slots_to_free = 1
-        if st == 'haircut': slots_to_free = 2
-        elif st == 'combo': slots_to_free = 3
         
-        cdt = cancel_time
-        for _ in range(slots_to_free):
+        all_user_slots = await conn.fetch('''
+            SELECT time FROM appointments 
+            WHERE date = $1 AND user_id = $2 AND service_type = $3 ORDER BY time
+        ''', target_date, user_id, st)
+        
+        block = []
+        current_block = []
+        for row in all_user_slots:
+            t = row['time']
+            if not current_block: current_block.append(t)
+            else:
+                prev_t = current_block[-1]
+                if (datetime.combine(target_date, t) - datetime.combine(target_date, prev_t)).total_seconds() == 900:
+                    current_block.append(t)
+                else:
+                    if cancel_time in current_block: block = current_block
+                    current_block = [t]
+        if cancel_time in current_block: block = current_block
+            
+        if not block: block = [cancel_time]
+
+        for t in block:
             await conn.execute('''
                 UPDATE appointments SET status = 'free', user_id = NULL, service_type = NULL
                 WHERE date = $1 AND time = $2 AND user_id = $3
-            ''', target_date, cdt, appointment['user_id'])
-            tmp = datetime.combine(target_date, cdt) + timedelta(minutes=15)
-            cdt = tmp.time()
+            ''', target_date, t, user_id)
 
-        await message.answer(get_text('admin_cancel_success', lang, date=target_date.strftime('%d.%m'), time=cancel_time.strftime('%H:%M')))
+        await message.answer(get_text('admin_cancel_success', lang, date=target_date.strftime('%d.%m'), time=block[0].strftime('%H:%M')))
 
         try:
             client_lang = appointment['client_lang'] if appointment['client_lang'] else 'ru'
@@ -260,25 +318,26 @@ async def cmd_dayoff(message: Message, db_pool: asyncpg.Pool, bot: Bot):
         return
 
     async with db_pool.acquire() as conn:
-        # Находим всех клиентов, записанных на этот день
+        # Находим уникальных клиентов и время их первой записи в этот день
         booked_apps = await conn.fetch('''
-            SELECT a.id, a.time, u.telegram_id, u.name, u.lang as client_lang
+            SELECT MIN(a.time) as start_time, u.telegram_id, u.name, u.lang as client_lang
             FROM appointments a
             JOIN users u ON a.user_id = u.id
             WHERE a.date = $1 AND a.status = 'booked'
+            GROUP BY u.telegram_id, u.name, u.lang
         ''', target_date)
 
         # Удаляем ВООБЩЕ ВСЕ слоты на эту дату (и свободные, и занятые)
         deleted = await conn.execute("DELETE FROM appointments WHERE date = $1", target_date)
         count = int(deleted.split()[-1]) if deleted.startswith("DELETE") else 0
 
-    # Уведомляем клиентов об отмене
+    # Уведомляем клиентов об отмене (по 1 сообщению каждому)
     for app in booked_apps:
         try:
             client_lang = app['client_lang'] if app['client_lang'] else 'ru'
             await bot.send_message(
                 app['telegram_id'],
-                get_text('admin_dayoff_notify_client', client_lang, name=app['name'], date=target_date.strftime('%d.%m.%Y'), time=app['time'].strftime('%H:%M'))
+                get_text('admin_dayoff_notify_client', client_lang, name=app['name'], date=target_date.strftime('%d.%m.%Y'), time=app['start_time'].strftime('%H:%M'))
             )
         except Exception:
             pass
