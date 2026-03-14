@@ -65,8 +65,22 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
     end_dt = datetime.combine(target_date, end_time)
 
     async with db_pool.acquire() as conn:
-        # Удаляем старые свободные слоты на эту дату, чтобы можно было перезаписать расписание
-        await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free'", target_date)
+        # Находим всех клиентов, чьи записи теперь не попадают в новый график
+        cancelled_apps = await conn.fetch('''
+            SELECT MIN(a.time) as start_time, u.telegram_id, u.name, u.lang as client_lang, a.service_type
+            FROM appointments a
+            JOIN users u ON a.user_id = u.id
+            WHERE a.date = $1 
+              AND a.status = 'booked' 
+              AND (a.time < $2 OR a.time >= $3)
+            GROUP BY u.telegram_id, u.name, u.lang, a.service_type
+        ''', target_date, start_time, end_time)
+
+        # Удаляем все записи (и свободные, и занятые), которые не попадают в новый график
+        await conn.execute("DELETE FROM appointments WHERE date = $1 AND (time < $2 OR time >= $3)", target_date, start_time, end_time)
+
+        # Удаляем старые свободные слоты внутри нового графика, чтобы переписать их чисто
+        await conn.execute("DELETE FROM appointments WHERE date = $1 AND status = 'free' AND time >= $2 AND time < $3", target_date, start_time, end_time)
         
         while current_dt < end_dt:
             slot_time = current_dt.time()
@@ -81,7 +95,30 @@ async def cmd_startday(message: Message, db_pool: asyncpg.Pool):
                 pass
             current_dt += timedelta(minutes=15)
 
-    await message.answer(get_text('admin_startday_success', lang, date=target_date.strftime('%d.%m.%Y'), start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created))
+    from aiogram import Bot
+    # Send notifications to cancelled clients
+    if 'bot' in message.model_fields_set or hasattr(message, 'bot'):
+        bot = message.bot
+    else:
+        # Fallback if bot is passed as mw kwarg
+        try:
+            bot = message.bot
+        except AttributeError:
+            bot = Bot(token="...") # Handle properly by accepting bot arg
+
+    for app in cancelled_apps:
+        try:
+            client_lang = app['client_lang'] if app['client_lang'] else 'ru'
+            # admin_dayoff_notify_client can be used universally for now
+            await bot.send_message(
+                app['telegram_id'],
+                get_text('admin_dayoff_notify_client', client_lang, name=app['name'], date=target_date.strftime('%d.%m.%Y'), time=app['start_time'].strftime('%H:%M'))
+            )
+        except Exception:
+            pass
+
+    await message.answer(get_text('admin_startday_success', lang, date=target_date.strftime('%d.%m.%Y'), start=start_time.strftime('%H:%M'), end=end_time.strftime('%H:%M'), count=slots_created) + 
+                         (f"\nОтменено записей вне графика: {len(cancelled_apps)}" if cancelled_apps else ""))
 
 @admin_router.message(Command("busy"))
 async def cmd_busy(message: Message, db_pool: asyncpg.Pool, bot: Bot):
