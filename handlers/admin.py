@@ -531,7 +531,7 @@ async def cmd_workday(message: Message, db_pool: asyncpg.Pool):
         return
 
     start_time = time(10, 0)
-    end_time = time(21, 0)
+    end_time = time(19, 0)
     slots_created = 0
     current_dt = datetime.combine(target_date, start_time)
     end_dt = datetime.combine(target_date, end_time)

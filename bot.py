@@ -56,7 +56,7 @@ async def auto_generate_schedule(pool):
                     existing = await conn.fetchval('SELECT COUNT(*) FROM appointments WHERE date = $1', target_date)
                     if existing == 0:
                         current_dt = datetime.combine(target_date, time(10, 0))
-                        end_dt = datetime.combine(target_date, time(21, 0))
+                        end_dt = datetime.combine(target_date, time(19, 0))
                         
                         while current_dt <= end_dt:
                             await conn.execute('''
