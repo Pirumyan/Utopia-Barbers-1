@@ -448,31 +448,31 @@ async def process_phone(message: Message, state: FSMContext, db_pool: asyncpg.Po
                 slot = await conn.fetchrow('SELECT status FROM appointments WHERE date = $1 AND time = $2 FOR UPDATE', selected_date, cdt)
                 if not slot or slot['status'] != 'free':
                     await message.answer(get_text('time_taken', lang))
-                await state.clear()
-                kbd = await get_main_menu_keyboard(tg_id, db_pool, lang)
-                await message.answer(get_text('main_menu', lang), reply_markup=kbd)
-                return
-            tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
-            cdt = tmp.time()
+                    await state.clear()
+                    kbd = await get_main_menu_keyboard(tg_id, db_pool, lang)
+                    await message.answer(get_text('main_menu', lang), reply_markup=kbd)
+                    return
+                tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
+                cdt = tmp.time()
             
-        # Register user
-        user_id = await conn.fetchval('''
-            INSERT INTO users (telegram_id, name, surname, phone, lang)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (telegram_id) DO UPDATE 
-            SET name = EXCLUDED.name, surname = EXCLUDED.surname, phone = EXCLUDED.phone
-            RETURNING id
-        ''', tg_id, name, surname, phone, lang)
+            # Register user
+            user_id = await conn.fetchval('''
+                INSERT INTO users (telegram_id, name, surname, phone, lang)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (telegram_id) DO UPDATE 
+                SET name = EXCLUDED.name, surname = EXCLUDED.surname, phone = EXCLUDED.phone
+                RETURNING id
+            ''', tg_id, name, surname, phone, lang)
 
-        # Update slots
-        cdt = selected_time_obj
-        for _ in range(num_slots):
-            await conn.execute('''
-                UPDATE appointments SET status = 'booked', user_id = $1, service_type = $2
-                WHERE date = $3 AND time = $4
-            ''', user_id, service, selected_date, cdt)
-            tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
-            cdt = tmp.time()
+            # Update slots
+            cdt = selected_time_obj
+            for _ in range(num_slots):
+                await conn.execute('''
+                    UPDATE appointments SET status = 'booked', user_id = $1, service_type = $2
+                    WHERE date = $3 AND time = $4
+                ''', user_id, service, selected_date, cdt)
+                tmp = datetime.combine(selected_date, cdt) + timedelta(minutes=15)
+                cdt = tmp.time()
 
     await state.clear()
     
